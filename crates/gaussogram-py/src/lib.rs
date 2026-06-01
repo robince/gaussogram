@@ -1,16 +1,31 @@
 //! PyO3 extension module `_native`, wrapped by the thin `python/gaussogram`
 //! package. Accepts/returns NumPy arrays; all heavy lifting is in
 //! `gaussogram-core`.
+//!
+//! Two entry styles:
+//! * free functions (`gft1d_real`, `gft1d`, `inverse_real`) — convenience, they
+//!   build a fresh engine per call;
+//! * the [`Gaussogram1d`] class — builds the engine, FFT plans, and scratch once
+//!   and reuses them across `.forward()` / `.inverse()` calls (the hot path).
+//!
+//! Zero-copy + GIL release: inputs are borrowed (never silently copied), and the
+//! GIL is released during the transform. To make that sound, the input array's
+//! NumPy `WRITEABLE` flag is cleared for the duration (see [`WriteableGuard`]),
+//! so a concurrent Python thread that tries to mutate it raises instead of
+//! racing the reader.
+
+use std::os::raw::c_int;
 
 use num_complex::Complex;
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
+use numpy::npyffi::{PyArrayObject, NPY_ARRAY_WRITEABLE};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use gaussogram_core::{
     build, complex_partitions as core_complex_partitions, dyadic_complex_with,
-    dyadic_dual_real_with, dyadic_real_with, legacy_real_partitions, GaussogramError, Scheme,
-    WindowKind,
+    dyadic_dual_real_with, dyadic_real_with, legacy_real_partitions, Gaussogram1d as CoreEngine,
+    GaussogramError, Scheme, Scratch, WindowKind,
 };
 
 fn map_err(e: GaussogramError) -> PyErr {
@@ -44,7 +59,39 @@ fn build_scheme(
     s.map_err(map_err)
 }
 
+/// RAII guard that clears a NumPy array's `WRITEABLE` flag while the GIL is
+/// released for a transform, then restores the original flags on drop. This
+/// turns concurrent Python-side mutation of a borrowed input into a hard error
+/// rather than a silent data race against the Rust reader.
+///
+/// Construct and drop this only while holding the GIL.
+struct WriteableGuard {
+    ptr: *mut PyArrayObject,
+    saved: c_int,
+}
+
+impl WriteableGuard {
+    /// SAFETY: `ptr` must be a valid NumPy array object and the GIL must be held.
+    unsafe fn lock(ptr: *mut PyArrayObject) -> Self {
+        let saved = (*ptr).flags;
+        (*ptr).flags = saved & !(NPY_ARRAY_WRITEABLE as c_int);
+        WriteableGuard { ptr, saved }
+    }
+}
+
+impl Drop for WriteableGuard {
+    fn drop(&mut self) {
+        // GIL is held here (drop runs back on the Python-facing side).
+        unsafe {
+            (*self.ptr).flags = self.saved;
+        }
+    }
+}
+
 /// Forward GFT of a real signal. Default scheme `dyadic_dual_real` (output N-1).
+///
+/// Convenience wrapper: builds a fresh engine per call. For repeated transforms
+/// of the same size/scheme, construct a `Gaussogram1d` once and reuse it.
 #[pyfunction]
 #[pyo3(signature = (x, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false))]
 fn gft1d_real<'py>(
@@ -55,6 +102,7 @@ fn gft1d_real<'py>(
     nyquist_flat_top: bool,
 ) -> PyResult<Bound<'py, PyArray1<Complex<f64>>>> {
     let kind = window_kind(window_type)?;
+    let arr_ptr = x.as_array_ptr();
     let signal = x.as_slice()?;
     let n = signal.len();
     let s = build_scheme(scheme, n, kind, nyquist_flat_top)?;
@@ -64,9 +112,13 @@ fn gft1d_real<'py>(
         ));
     }
     let engine = build(s);
+    let mut scratch = engine.alloc_scratch();
     let mut out = vec![Complex::new(0.0, 0.0); engine.output_len()];
-    py.allow_threads(|| engine.forward(signal, &mut out))
-        .map_err(map_err)?;
+    {
+        let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
+        py.allow_threads(|| engine.forward_with(signal, &mut out, &mut scratch))
+            .map_err(map_err)?;
+    }
     Ok(out.into_pyarray(py))
 }
 
@@ -80,13 +132,18 @@ fn gft1d<'py>(
     window_type: &str,
 ) -> PyResult<Bound<'py, PyArray1<Complex<f64>>>> {
     let kind = window_kind(window_type)?;
+    let arr_ptr = z.as_array_ptr();
     let signal = z.as_slice()?;
     let n = signal.len();
     let s = build_scheme("dyadic_complex", n, kind, false)?;
     let engine = build(s);
+    let mut scratch = engine.alloc_scratch();
     let mut out = vec![Complex::new(0.0, 0.0); engine.output_len()];
-    py.allow_threads(|| engine.forward_complex(signal, &mut out))
-        .map_err(map_err)?;
+    {
+        let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
+        py.allow_threads(|| engine.forward_complex_with(signal, &mut out, &mut scratch))
+            .map_err(map_err)?;
+    }
     Ok(out.into_pyarray(py))
 }
 
@@ -99,15 +156,147 @@ fn inverse_real<'py>(
     window_type: &str,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let kind = window_kind(window_type)?;
+    let arr_ptr = coeffs.as_array_ptr();
     let c = coeffs.as_slice()?;
     // Recover N from output_len = N/2 + 1.
     let n = (c.len() - 1) * 2;
     let s = build_scheme("dyadic_real", n, kind, false)?;
     let engine = build(s);
+    let mut scratch = engine.alloc_scratch();
     let mut out = vec![0.0f64; n];
-    py.allow_threads(|| engine.inverse(c, &mut out))
-        .map_err(map_err)?;
+    {
+        let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
+        py.allow_threads(|| engine.inverse_with(c, &mut out, &mut scratch))
+            .map_err(map_err)?;
+    }
     Ok(out.into_pyarray(py))
+}
+
+/// Reusable transform handle: builds the FFT plans and scratch buffers once and
+/// reuses them across calls. Use this instead of the free functions for tight
+/// loops or repeated transforms of the same size and scheme.
+///
+/// An instance owns mutable scratch, so a single instance is **not** safe to
+/// call concurrently from multiple Python threads — create one per thread.
+#[pyclass(name = "Gaussogram1d", module = "gaussogram._native")]
+struct PyGaussogram {
+    engine: CoreEngine,
+    scratch: Scratch,
+    n: usize,
+    output_len: usize,
+    complex_input: bool,
+    invertible: bool,
+}
+
+#[pymethods]
+impl PyGaussogram {
+    #[new]
+    #[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false))]
+    fn new(n: usize, scheme: &str, window_type: &str, nyquist_flat_top: bool) -> PyResult<Self> {
+        let kind = window_kind(window_type)?;
+        let s = build_scheme(scheme, n, kind, nyquist_flat_top)?;
+        let complex_input = s.complex_input;
+        let invertible = s.invertible;
+        let output_len = s.output_len;
+        let engine = build(s);
+        let scratch = engine.alloc_scratch();
+        Ok(PyGaussogram {
+            engine,
+            scratch,
+            n,
+            output_len,
+            complex_input,
+            invertible,
+        })
+    }
+
+    #[getter]
+    fn n(&self) -> usize {
+        self.n
+    }
+
+    #[getter]
+    fn output_len(&self) -> usize {
+        self.output_len
+    }
+
+    #[getter]
+    fn invertible(&self) -> bool {
+        self.invertible
+    }
+
+    /// Forward transform of a real signal of length `n`, reusing the handle's
+    /// plans and scratch. The input is borrowed (not copied) and locked
+    /// read-only while the GIL is released.
+    fn forward<'py>(
+        &mut self,
+        py: Python<'py>,
+        x: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<Complex<f64>>>> {
+        if self.complex_input {
+            return Err(PyValueError::new_err(
+                "this handle uses a complex-input scheme; use forward_complex",
+            ));
+        }
+        let arr_ptr = x.as_array_ptr();
+        let signal = x.as_slice()?;
+        let mut out = vec![Complex::new(0.0, 0.0); self.output_len];
+        // Disjoint field borrows: engine (shared) + scratch (exclusive).
+        let engine = &self.engine;
+        let scratch = &mut self.scratch;
+        {
+            let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
+            py.allow_threads(|| engine.forward_with(signal, &mut out, scratch))
+                .map_err(map_err)?;
+        }
+        Ok(out.into_pyarray(py))
+    }
+
+    /// Forward transform of a complex signal (for `dyadic_complex` handles).
+    fn forward_complex<'py>(
+        &mut self,
+        py: Python<'py>,
+        z: PyReadonlyArray1<'py, Complex<f64>>,
+    ) -> PyResult<Bound<'py, PyArray1<Complex<f64>>>> {
+        if !self.complex_input {
+            return Err(PyValueError::new_err(
+                "this handle uses a real-input scheme; use forward",
+            ));
+        }
+        let arr_ptr = z.as_array_ptr();
+        let signal = z.as_slice()?;
+        let mut out = vec![Complex::new(0.0, 0.0); self.output_len];
+        let engine = &self.engine;
+        let scratch = &mut self.scratch;
+        {
+            let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
+            py.allow_threads(|| engine.forward_complex_with(signal, &mut out, scratch))
+                .map_err(map_err)?;
+        }
+        Ok(out.into_pyarray(py))
+    }
+
+    /// Inverse transform (only for invertible schemes, e.g. `dyadic_real`).
+    fn inverse<'py>(
+        &mut self,
+        py: Python<'py>,
+        coeffs: PyReadonlyArray1<'py, Complex<f64>>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if !self.invertible {
+            return Err(PyValueError::new_err("this scheme is not invertible"));
+        }
+        let arr_ptr = coeffs.as_array_ptr();
+        let c = coeffs.as_slice()?;
+        let mut out = vec![0.0f64; self.n];
+        let engine = &self.engine;
+        let scratch = &mut self.scratch;
+        {
+            let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
+            py.allow_threads(|| engine.inverse_with(c, &mut out, scratch))
+                .map_err(map_err)?;
+        }
+        Ok(out.into_pyarray(py))
+    }
 }
 
 /// Complex-scheme partition boundaries (legacy `partitions`).
@@ -192,5 +381,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(real_partitions, m)?)?;
     m.add_function(wrap_pyfunction!(scheme_bands, m)?)?;
     m.add_function(wrap_pyfunction!(output_len, m)?)?;
+    m.add_class::<PyGaussogram>()?;
     Ok(())
 }

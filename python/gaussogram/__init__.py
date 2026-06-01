@@ -3,6 +3,7 @@
 
 from ._api import (
     BandLayout,
+    Gaussogram1d,
     gft1d,
     gft1d_real,
     inverse_real,
@@ -15,6 +16,7 @@ from ._api import (
 
 __all__ = [
     "BandLayout",
+    "Gaussogram1d",
     "gft1d",
     "gft1d_real",
     "inverse_real",

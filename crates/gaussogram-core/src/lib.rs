@@ -11,7 +11,7 @@ pub mod fft;
 pub mod scheme;
 pub mod window;
 
-pub use engine::Gaussogram1d;
+pub use engine::{Gaussogram1d, Scratch};
 pub use error::{
     GaussogramError, STATUS_INPUT_LEN_MISMATCH, STATUS_INTERNAL, STATUS_NOT_INVERTIBLE, STATUS_OK,
     STATUS_OUTPUT_LEN_MISMATCH, STATUS_POWER_OF_TWO, STATUS_TOO_SMALL, STATUS_UNKNOWN_WINDOW,

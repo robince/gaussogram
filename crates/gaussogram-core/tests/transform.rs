@@ -211,3 +211,27 @@ fn batch_matches_single() {
         }
     }
 }
+
+#[test]
+fn forward_with_reused_scratch_matches_forward() {
+    // A single reused Scratch across many calls must produce bit-identical
+    // results to the allocate-per-call `forward` (no state leaks between calls).
+    let n = 256;
+    let engine = build(dyadic_dual_real(n).unwrap());
+    let olen = engine.output_len();
+    let mut scratch = engine.alloc_scratch();
+
+    for f in [3.0_f64, 17.0, 64.0, 100.0] {
+        let sig: Vec<f64> = (0..n)
+            .map(|i| (2.0 * PI * f * i as f64 / n as f64).cos())
+            .collect();
+
+        let mut reused = vec![Complex::new(0.0, 0.0); olen];
+        engine.forward_with(&sig, &mut reused, &mut scratch).unwrap();
+
+        let mut fresh = vec![Complex::new(0.0, 0.0); olen];
+        engine.forward(&sig, &mut fresh).unwrap();
+
+        assert_eq!(reused, fresh);
+    }
+}

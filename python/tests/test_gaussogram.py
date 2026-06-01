@@ -131,3 +131,87 @@ def test_real_partitions_reject_invalid_sizes(size):
 def test_complex_partitions_reject_invalid_sizes(size):
     with pytest.raises(ValueError, match="power of two"):
         g.partitions(size)
+
+
+# ---- strict input validation (no silent copy/cast in the wrapper) ---------
+
+
+def test_wrong_dtype_rejected_not_silently_cast():
+    x = np.cos(np.arange(64, dtype=np.float32))  # float32, not float64
+    with pytest.raises(TypeError, match="dtype"):
+        g.gft1d_real(x)
+
+
+def test_non_contiguous_input_rejected():
+    x = np.cos(2 * np.pi * 10 * np.arange(128) / 128)
+    with pytest.raises(ValueError, match="C-contiguous"):
+        g.gft1d_real(x[::2])  # strided view, length 64
+
+
+def test_non_ndarray_input_rejected():
+    with pytest.raises(TypeError, match="ndarray"):
+        g.gft1d_real([0.0] * 64)
+
+
+def test_higher_dim_input_rejected():
+    with pytest.raises(ValueError, match="1D"):
+        g.gft1d_real(np.zeros((8, 8)))
+
+
+def test_input_not_mutated_and_writeable_flag_restored():
+    x = np.ascontiguousarray(np.cos(2 * np.pi * 12 * np.arange(64) / 64))
+    before = x.copy()
+    assert x.flags.writeable
+    g.gft1d_real(x)
+    # The transform borrows the buffer; it must neither mutate it nor leave it
+    # locked read-only after returning.
+    np.testing.assert_array_equal(x, before)
+    assert x.flags.writeable
+
+
+# ---- reusable Gaussogram1d handle -----------------------------------------
+
+
+def test_handle_matches_free_function():
+    n = 256
+    x = np.ascontiguousarray(np.cos(2 * np.pi * 40 * np.arange(n) / n))
+    h = g.Gaussogram1d(n, scheme="dyadic_dual_real", nyquist_flat_top=True)
+    assert h.n == n
+    assert h.output_len == n - 1
+    free = g.gft1d_real(x, scheme="dyadic_dual_real", nyquist_flat_top=True)
+    handle = h.forward(x)
+    np.testing.assert_array_equal(handle, free)
+
+
+def test_handle_reused_across_calls_is_stable():
+    n = 128
+    h = g.Gaussogram1d(n, scheme="dyadic_dual_real")
+    first = None
+    out = None
+    for f in (8, 16, 32):
+        x = np.ascontiguousarray(np.cos(2 * np.pi * f * np.arange(n) / n))
+        out = h.forward(x)
+        # Re-running the same signal must reproduce exactly (scratch reuse must
+        # not leak state between calls).
+        np.testing.assert_array_equal(out, h.forward(x))
+        if f == 8:
+            first = out
+    # Sanity: a different frequency gives a different result.
+    assert not np.array_equal(first, out)
+
+
+def test_handle_round_trip_dyadic_real():
+    n = 256
+    rng = np.random.default_rng(1)
+    x = np.ascontiguousarray(rng.standard_normal(n))
+    h = g.Gaussogram1d(n, scheme="dyadic_real")
+    assert h.invertible
+    coeffs = h.forward(x)
+    recon = h.inverse(coeffs)
+    np.testing.assert_allclose(recon, x, atol=1e-9)
+
+
+def test_handle_rejects_wrong_length():
+    h = g.Gaussogram1d(64)
+    with pytest.raises(ValueError):
+        h.forward(np.ascontiguousarray(np.zeros(32)))

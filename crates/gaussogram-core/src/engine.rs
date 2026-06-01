@@ -117,7 +117,11 @@ impl Gaussogram1d {
         self.scheme.output_len
     }
 
-    fn make_scratch(&self) -> Scratch {
+    /// Allocate a reusable [`Scratch`] sized for this engine. Callers running
+    /// many transforms (tight loops, per-thread workers, a Python handle) should
+    /// allocate this once and pass it to the `*_with` methods to avoid
+    /// re-allocating `spectrum`, `real_in`, `band`, and `fft` on every call.
+    pub fn alloc_scratch(&self) -> Scratch {
         Scratch::new(
             self.spectrum_len,
             self.scheme.n,
@@ -145,7 +149,15 @@ impl Gaussogram1d {
         }
     }
 
-    fn forward_real_into(
+    /// Forward transform for real-input schemes, reusing a caller-owned
+    /// [`Scratch`]. This is the allocation-free hot path: build the engine and
+    /// scratch once, then call this repeatedly.
+    ///
+    /// Note: `realfft` mutates its input buffer, so the real signal is copied
+    /// into `scratch.real_in` once per call. This single copy is unavoidable
+    /// with the immutable `&[f64]` contract (a c2r plan cannot borrow the
+    /// caller's slice read-only); it is *not* a per-call heap allocation.
+    pub fn forward_with(
         &self,
         signal: &[f64],
         out: &mut [Complex<f64>],
@@ -179,9 +191,11 @@ impl Gaussogram1d {
     }
 
     /// Forward transform for real-input schemes (`dyadic_real`, `dyadic_dual_real`).
+    /// Convenience wrapper that allocates scratch per call; use
+    /// [`Gaussogram1d::forward_with`] in tight loops.
     pub fn forward(&self, signal: &[f64], out: &mut [Complex<f64>]) -> Result<(), GaussogramError> {
-        let mut scratch = self.make_scratch();
-        self.forward_real_into(signal, out, &mut scratch)
+        let mut scratch = self.alloc_scratch();
+        self.forward_with(signal, out, &mut scratch)
     }
 
     /// Batch forward over independent segments, parallelised with rayon.
@@ -217,17 +231,19 @@ impl Gaussogram1d {
             .par_chunks_mut(olen)
             .zip(signals.par_iter())
             .try_for_each_init(
-                || self.make_scratch(),
-                |scratch, (chunk, signal)| self.forward_real_into(signal, chunk, scratch),
+                || self.alloc_scratch(),
+                |scratch, (chunk, signal)| self.forward_with(signal, chunk, scratch),
             );
         result
     }
 
-    /// Forward transform for the complex-input scheme (`dyadic_complex`).
-    pub fn forward_complex(
+    /// Forward transform for the complex-input scheme (`dyadic_complex`),
+    /// reusing a caller-owned [`Scratch`].
+    pub fn forward_complex_with(
         &self,
         signal: &[Complex<f64>],
         out: &mut [Complex<f64>],
+        scratch: &mut Scratch,
     ) -> Result<(), GaussogramError> {
         if !self.scheme.complex_input {
             return Err(GaussogramError::WrongInputKind {
@@ -246,21 +262,33 @@ impl Gaussogram1d {
                 got: out.len(),
             });
         }
-        let mut scratch = self.make_scratch();
         let Forward::Complex(plan) = &self.forward else {
             unreachable!("complex scheme has a complex forward plan");
         };
         scratch.spectrum.copy_from_slice(signal);
         plan.process(&mut scratch.spectrum, &mut scratch.fft);
-        self.run_bands(out, &mut scratch);
+        self.run_bands(out, scratch);
         Ok(())
     }
 
-    /// Inverse transform (only for invertible schemes, currently `dyadic_real`).
-    pub fn inverse(
+    /// Forward transform for the complex-input scheme (`dyadic_complex`).
+    /// Convenience wrapper that allocates scratch per call.
+    pub fn forward_complex(
+        &self,
+        signal: &[Complex<f64>],
+        out: &mut [Complex<f64>],
+    ) -> Result<(), GaussogramError> {
+        let mut scratch = self.alloc_scratch();
+        self.forward_complex_with(signal, out, &mut scratch)
+    }
+
+    /// Inverse transform (only for invertible schemes, currently `dyadic_real`),
+    /// reusing a caller-owned [`Scratch`].
+    pub fn inverse_with(
         &self,
         coeffs: &[Complex<f64>],
         out: &mut [f64],
+        scratch: &mut Scratch,
     ) -> Result<(), GaussogramError> {
         if !self.scheme.invertible {
             return Err(GaussogramError::NotInvertible(self.scheme.name));
@@ -277,7 +305,6 @@ impl Gaussogram1d {
                 got: out.len(),
             });
         }
-        let mut scratch = self.make_scratch();
 
         // Rebuild the half-spectrum band by band: FFT(coeffs_band) recovers
         // S_slice * screen; divide by screen to recover S_slice.
@@ -310,5 +337,16 @@ impl Gaussogram1d {
             *v *= inv;
         }
         Ok(())
+    }
+
+    /// Inverse transform (only for invertible schemes, currently `dyadic_real`).
+    /// Convenience wrapper that allocates scratch per call.
+    pub fn inverse(
+        &self,
+        coeffs: &[Complex<f64>],
+        out: &mut [f64],
+    ) -> Result<(), GaussogramError> {
+        let mut scratch = self.alloc_scratch();
+        self.inverse_with(coeffs, out, &mut scratch)
     }
 }

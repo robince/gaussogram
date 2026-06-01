@@ -14,6 +14,11 @@ from numpy.typing import NDArray
 
 from . import _native
 
+#: Reusable transform handle (builds FFT plans + scratch once, reuses across
+#: calls). Prefer this over the free functions for tight loops. See the native
+#: docstring for threading caveats (one instance per thread).
+Gaussogram1d = _native.Gaussogram1d
+
 __all__ = [
     "gft1d",
     "gft1d_real",
@@ -23,8 +28,33 @@ __all__ = [
     "scheme_bands",
     "output_len",
     "BandLayout",
+    "Gaussogram1d",
     "to_grid",
 ]
+
+
+def _require_1d(a, dtype, name: str) -> NDArray:
+    """Validate that ``a`` is a 1-D C-contiguous ndarray of exactly ``dtype``.
+
+    This layer intentionally does **not** copy or cast: a silent
+    ``np.ascontiguousarray`` would hide allocations from the caller and break
+    the zero-copy contract. If the array does not already match, the caller is
+    told what is wrong and asked to convert explicitly.
+    """
+    if not isinstance(a, np.ndarray):
+        raise TypeError(f"{name} must be a numpy.ndarray, got {type(a).__name__}")
+    if a.dtype != dtype:
+        raise TypeError(
+            f"{name} must have dtype {np.dtype(dtype)}, got {a.dtype}; "
+            f"convert explicitly with .astype({np.dtype(dtype)!r})"
+        )
+    if a.ndim != 1:
+        raise ValueError(f"{name} must be a 1D vector, got {a.ndim}D")
+    if not a.flags["C_CONTIGUOUS"]:
+        raise ValueError(
+            f"{name} must be C-contiguous; call np.ascontiguousarray() explicitly"
+        )
+    return a
 
 
 class BandLayout(NamedTuple):
@@ -52,26 +82,20 @@ def gft1d_real(
     (a deliberate breaking change from the legacy length-N contract). Pass
     ``scheme="dyadic_real"`` for the invertible length-``N/2+1`` baseline.
     """
-    x = np.ascontiguousarray(x, dtype=np.float64)
-    if x.ndim != 1:
-        raise ValueError("input must be a 1D vector")
+    x = _require_1d(x, np.float64, "x")
     return _native.gft1d_real(x, scheme, window_type, nyquist_flat_top)
 
 
 def gft1d(z, window_type: str = "gaussian") -> NDArray[np.complex128]:
     """Forward GFT of a complex signal (symmetric `dyadic_complex` scheme,
     output length N). Port of the legacy `pygft.gft1d`."""
-    z = np.ascontiguousarray(z, dtype=np.complex128)
-    if z.ndim != 1:
-        raise ValueError("input must be a 1D vector")
+    z = _require_1d(z, np.complex128, "z")
     return _native.gft1d(z, window_type)
 
 
 def inverse_real(coeffs, window_type: str = "gaussian") -> NDArray[np.float64]:
     """Inverse of the invertible `dyadic_real` scheme (length-``N/2+1`` input)."""
-    coeffs = np.ascontiguousarray(coeffs, dtype=np.complex128)
-    if coeffs.ndim != 1:
-        raise ValueError("input must be a 1D vector")
+    coeffs = _require_1d(coeffs, np.complex128, "coeffs")
     return _native.inverse_real(coeffs, window_type)
 
 
