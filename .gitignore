@@ -1,0 +1,40 @@
+# ---- Rust ----
+/target/
+**/*.rs.bk
+*.pdb
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+*.so
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---- maturin / build artifacts ----
+/python/gaussogram/_native*.so
+/python/gaussogram/_native*.pyd
+
+# ---- golden vector generator (compiled binary; regenerate from gen_golden.c) ----
+/golden/gen_golden
+/golden/*.o
+
+# ---- local reference symlink (points outside repo) ----
+/extern/
+
+# ---- editor / OS ----
+.DS_Store
+.idea/
+.vscode/
+*.swp

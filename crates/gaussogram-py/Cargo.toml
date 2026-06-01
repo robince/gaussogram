@@ -1,0 +1,18 @@
+[package]
+name = "gaussogram-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+numpy = "0.24"
+pyo3 = { version = "0.24", features = ["abi3-py310", "extension-module"] }
+num-complex.workspace = true
+gaussogram-core = { path = "../gaussogram-core" }
+
+[build-dependencies]
+pyo3-build-config = "0.24"

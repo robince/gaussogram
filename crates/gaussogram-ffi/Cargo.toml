@@ -1,0 +1,13 @@
+[package]
+name = "gaussogram-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gaussogram_ffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gaussogram-core = { path = "../gaussogram-core" }
+num-complex.workspace = true

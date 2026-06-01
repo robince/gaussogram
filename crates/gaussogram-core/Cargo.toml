@@ -1,0 +1,25 @@
+[package]
+name = "gaussogram-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = ["fft-rustfft"]
+fft-rustfft = ["dep:rustfft", "dep:realfft"]
+fft-fftw = ["dep:fftw"]
+
+[dependencies]
+num-complex.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+rustfft = { workspace = true, optional = true }
+realfft = { workspace = true, optional = true }
+fftw = { version = "0.8", optional = true }
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true

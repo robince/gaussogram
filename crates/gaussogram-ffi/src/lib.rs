@@ -1,0 +1,220 @@
+//! C ABI shim for MATLAB / other C callers. No panics cross the boundary
+//! (bodies are wrapped in `catch_unwind`); errors are integer status codes.
+
+use std::os::raw::c_char;
+use std::panic;
+use std::ptr;
+use std::slice;
+
+use num_complex::Complex;
+
+use gaussogram_core::{
+    build, complex_partitions, dyadic_complex_with, dyadic_dual_real_with, dyadic_real_with,
+    legacy_real_partitions, Gaussogram1d, WindowKind, STATUS_INTERNAL, STATUS_OK,
+    STATUS_UNKNOWN_WINDOW,
+};
+
+pub use gaussogram_core::{
+    STATUS_NOT_INVERTIBLE, STATUS_OUTPUT_LEN_MISMATCH, STATUS_POWER_OF_TWO, STATUS_TOO_SMALL,
+    STATUS_WRONG_INPUT_KIND,
+};
+
+/// Opaque handle wrapping a constructed engine so callers build once and
+/// transform many segments (plan reuse across calls).
+pub struct GaussogramHandle {
+    engine: Gaussogram1d,
+}
+
+fn scheme_from_id(
+    scheme_id: i32,
+    n: usize,
+    kind: WindowKind,
+    nyquist_flat_top: bool,
+) -> Option<gaussogram_core::Scheme> {
+    match scheme_id {
+        0 => dyadic_dual_real_with(n, kind, nyquist_flat_top).ok(),
+        1 => dyadic_real_with(n, kind).ok(),
+        2 => dyadic_complex_with(n, kind).ok(),
+        _ => None,
+    }
+}
+
+fn kind_from_id(window_id: i32) -> Option<WindowKind> {
+    match window_id {
+        0 => Some(WindowKind::Gaussian),
+        1 => Some(WindowKind::Box),
+        _ => None,
+    }
+}
+
+/// Create an engine. `scheme_id`: 0=dyadic_dual_real, 1=dyadic_real,
+/// 2=dyadic_complex. `window_id`: 0=gaussian, 1=box. On success writes the
+/// handle pointer to `*out_handle` and returns STATUS_OK.
+///
+/// # Safety
+/// `out_handle` must be a valid pointer to a `*mut GaussogramHandle`.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_create(
+    scheme_id: i32,
+    n: usize,
+    window_id: i32,
+    nyquist_flat_top: i32,
+    out_handle: *mut *mut GaussogramHandle,
+) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let Some(kind) = kind_from_id(window_id) else {
+            return STATUS_UNKNOWN_WINDOW;
+        };
+        let Some(scheme) = scheme_from_id(scheme_id, n, kind, nyquist_flat_top != 0) else {
+            return STATUS_POWER_OF_TWO; // closest generic construction failure
+        };
+        let engine = build(scheme);
+        let boxed = Box::new(GaussogramHandle { engine });
+        unsafe {
+            *out_handle = Box::into_raw(boxed);
+        }
+        STATUS_OK
+    }));
+    result.unwrap_or(STATUS_INTERNAL)
+}
+
+/// Destroy a handle created by `gaussogram_create`.
+///
+/// # Safety
+/// `handle` must have been returned by `gaussogram_create` and not yet freed.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_destroy(handle: *mut GaussogramHandle) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle) });
+    }
+}
+
+/// Query the packed output length (number of complex coefficients).
+///
+/// # Safety
+/// `handle` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_output_len(handle: *const GaussogramHandle) -> usize {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe { (*handle).engine.output_len() }
+}
+
+/// Forward transform of one real segment. `signal` has `n` doubles; `out` has
+/// `2 * output_len` doubles (interleaved re,im).
+///
+/// # Safety
+/// Pointers must be valid for the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_forward_real(
+    handle: *const GaussogramHandle,
+    signal: *const f64,
+    signal_len: usize,
+    out: *mut f64,
+    out_len_complex: usize,
+) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        if handle.is_null() || signal.is_null() || out.is_null() {
+            return STATUS_INTERNAL;
+        }
+        let engine = unsafe { &(*handle).engine };
+        let sig = unsafe { slice::from_raw_parts(signal, signal_len) };
+        let out_complex =
+            unsafe { slice::from_raw_parts_mut(out as *mut Complex<f64>, out_len_complex) };
+        match engine.forward(sig, out_complex) {
+            Ok(()) => STATUS_OK,
+            Err(e) => e.status_code(),
+        }
+    }));
+    result.unwrap_or(STATUS_INTERNAL)
+}
+
+/// Batch forward over `count` real segments laid out contiguously
+/// (`count * n` doubles in, `count * 2 * output_len` doubles out).
+///
+/// # Safety
+/// Pointers must be valid for the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_forward_real_batch(
+    handle: *const GaussogramHandle,
+    signals: *const f64,
+    n: usize,
+    count: usize,
+    out: *mut f64,
+    out_len_complex: usize,
+) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        if handle.is_null() || signals.is_null() || out.is_null() {
+            return STATUS_INTERNAL;
+        }
+        let engine = unsafe { &(*handle).engine };
+        let flat = unsafe { slice::from_raw_parts(signals, n * count) };
+        let segs: Vec<&[f64]> = (0..count).map(|i| &flat[i * n..(i + 1) * n]).collect();
+        let out_complex =
+            unsafe { slice::from_raw_parts_mut(out as *mut Complex<f64>, out_len_complex) };
+        match engine.forward_batch(&segs, out_complex) {
+            Ok(()) => STATUS_OK,
+            Err(e) => e.status_code(),
+        }
+    }));
+    result.unwrap_or(STATUS_INTERNAL)
+}
+
+/// Write the legacy real-partition boundaries into `out` (caller provides a
+/// buffer of at least `2*log2(N/2)+1` ints). Returns the count written, or -1.
+///
+/// # Safety
+/// `out` must be valid for `out_cap` `i32`s.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_real_partitions(
+    n: usize,
+    out: *mut i32,
+    out_cap: usize,
+) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let pars = legacy_real_partitions(n);
+        if out.is_null() || pars.len() > out_cap {
+            return -1;
+        }
+        let dst = unsafe { slice::from_raw_parts_mut(out, pars.len()) };
+        for (d, &p) in dst.iter_mut().zip(pars.iter()) {
+            *d = p as i32;
+        }
+        pars.len() as i32
+    }));
+    result.unwrap_or(-1)
+}
+
+/// Write the complex-partition boundaries. See `gaussogram_real_partitions`.
+///
+/// # Safety
+/// `out` must be valid for `out_cap` `i32`s.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_complex_partitions(
+    n: usize,
+    out: *mut i32,
+    out_cap: usize,
+) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let pars = complex_partitions(n);
+        if out.is_null() || pars.len() > out_cap {
+            return -1;
+        }
+        let dst = unsafe { slice::from_raw_parts_mut(out, pars.len()) };
+        for (d, &p) in dst.iter_mut().zip(pars.iter()) {
+            *d = p as i32;
+        }
+        pars.len() as i32
+    }));
+    result.unwrap_or(-1)
+}
+
+/// Reserved for a future name-based constructor; currently unused.
+///
+/// # Safety
+/// `_name` must be a valid C string if non-null.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_unused_name_marker(_name: *const c_char) -> *const c_char {
+    ptr::null()
+}

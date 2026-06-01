@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/gaussogram-core", "crates/gaussogram-ffi", "crates/gaussogram-py"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+num-complex = "0.4"
+rustfft = "6"
+realfft = "3"
+rayon = "1"
+thiserror = "1.0"
+approx = "0.5"
+proptest = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

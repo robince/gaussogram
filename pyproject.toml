@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "gaussogram"
+version = "0.1.0"
+description = "A parsimonious adaptive time-frequency representation (fast Gaussian S-transform / GFT)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+demo = ["matplotlib>=3.6"]
+test = ["pytest>=7"]
+
+[tool.maturin]
+manifest-path = "crates/gaussogram-py/Cargo.toml"
+python-source = "python"
+module-name = "gaussogram._native"
