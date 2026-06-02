@@ -85,9 +85,12 @@ c = gaussogram(sig);
 g = gaussogram_to_grid(c, n, 'interp', 'linear', 'smooth', [1.5, 3]);
 figure('Name', ttl);
 tiledlayout(2, 1, 'TileSpacing', 'compact');
-nexttile;
+ax1 = nexttile;
 plot((0:n-1) / n, sig); grid on; xlim([0, 1]);
 xlabel('time'); ylabel('amplitude'); title(ttl);
+% Dummy invisible colorbar: reserves the same right-hand gutter the grid's
+% colorbar takes, so the two time axes line up.
+cb = colorbar(ax1); cb.Visible = 'off';
 nexttile;
 show_grid(g, n);
 end
