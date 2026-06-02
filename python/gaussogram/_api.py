@@ -132,40 +132,93 @@ def output_len(
     return int(_native.output_len(int(n), scheme, window_type, nyquist_flat_top))
 
 
+def _blur_axis(a: NDArray[np.float64], sigma: float, axis: int) -> NDArray[np.float64]:
+    """Edge-padded 1-D Gaussian convolution along one axis (numpy-only)."""
+    radius = max(1, int(round(3.0 * sigma)))
+    x = np.arange(-radius, radius + 1, dtype=np.float64)
+    kernel = np.exp(-(x**2) / (2.0 * sigma**2))
+    kernel /= kernel.sum()
+
+    def conv1d(m: NDArray[np.float64]) -> NDArray[np.float64]:
+        padded = np.pad(m, (radius, radius), mode="edge")
+        return np.convolve(padded, kernel, mode="valid")
+
+    return np.apply_along_axis(conv1d, axis, a)
+
+
+def _gaussian_blur(grid: NDArray[np.float64], sigma) -> NDArray[np.float64]:
+    """Separable Gaussian blur. ``sigma`` is a scalar (both axes) or a
+    ``(sigma_freq, sigma_time)`` pair, in grid cells."""
+    if np.isscalar(sigma):
+        sf = st = float(sigma)
+    else:
+        sf, st = float(sigma[0]), float(sigma[1])
+    out = grid
+    if sf > 0:
+        out = _blur_axis(out, sf, axis=0)
+    if st > 0:
+        out = _blur_axis(out, st, axis=1)
+    return out
+
+
 def to_grid(
     coeffs,
     n: int,
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
     nyquist_flat_top: bool = False,
+    interp: str = "linear",
+    smooth=None,
 ) -> NDArray[np.float64]:
     """Render packed GFT coefficients onto a ``(N/2+1, N)`` magnitude grid for
     display: frequency on the vertical axis, time on the horizontal.
 
     Each band carries ``width`` complex samples spanning the full signal
-    duration; they are nearest-neighbour interpolated to ``N`` time points and
-    written to the rows the band covers. For the overlapping dual scheme, the
-    larger magnitude wins per (freq, time) cell.
+    duration. The band magnitude is resampled to ``N`` time points and written
+    to every frequency row the band covers (block fill in frequency). For the
+    overlapping dual scheme, the larger magnitude wins per (freq, time) cell.
+
+    Parameters
+    ----------
+    interp:
+        Time-axis resampling of each band's magnitude:
+        ``"linear"`` (default) piecewise-linear interpolation between the band's
+        ``width`` samples — smooth; ``"nearest"`` block/step sampling (the
+        original behaviour) — shows the raw coefficient cells.
+    smooth:
+        Optional Gaussian blur applied to the assembled grid, in grid cells.
+        A scalar blurs both axes equally; a ``(sigma_freq, sigma_time)`` pair
+        blurs per-axis. ``None`` (default) disables smoothing. This softens the
+        hard block edges in frequency that the constant-Q tiling produces.
     """
     coeffs = np.ascontiguousarray(coeffs, dtype=np.complex128)
     layout = scheme_bands(n, scheme, window_type, nyquist_flat_top)
     nfreq = n // 2 + 1
     grid = np.zeros((nfreq, n), dtype=np.float64)
 
+    if interp not in ("linear", "nearest"):
+        raise ValueError(f"interp must be 'linear' or 'nearest', got {interp!r}")
+
     target_times = np.arange(n)
     for lo, w, off in zip(layout.src_lo, layout.width, layout.out_off):
         lo = int(lo)
         w = int(w)
         off = int(off)
-        band = coeffs[off : off + w]
+        mag = np.abs(coeffs[off : off + w])
         if w == 1:
-            row = np.full(n, np.abs(band[0]))
+            row = np.full(n, mag[0])
         else:
             band_times = np.linspace(0, n - 1, w)
-            nearest = np.abs(target_times[:, None] - band_times[None, :]).argmin(axis=1)
-            row = np.abs(band[nearest])
+            if interp == "nearest":
+                idx = np.abs(target_times[:, None] - band_times[None, :]).argmin(axis=1)
+                row = mag[idx]
+            else:  # linear
+                row = np.interp(target_times, band_times, mag)
         hi = min(lo + w, nfreq)
         if lo >= nfreq:
             continue
         grid[lo:hi, :] = np.maximum(grid[lo:hi, :], row[None, :])
+
+    if smooth is not None:
+        grid = _gaussian_blur(grid, smooth)
     return grid

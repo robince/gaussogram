@@ -102,6 +102,28 @@ def test_to_grid_shape_and_finite():
     assert np.all(np.isfinite(grid))
 
 
+def test_to_grid_interp_and_smooth_modes():
+    n = 128
+    x = np.cos(2 * np.pi * 20 * np.arange(n) / n)
+    coeffs = g.gft1d_real(x)
+    near = g.to_grid(coeffs, n, interp="nearest")
+    lin = g.to_grid(coeffs, n, interp="linear")
+    sm = g.to_grid(coeffs, n, interp="linear", smooth=(2.0, 4.0))
+    sm_scalar = g.to_grid(coeffs, n, smooth=1.5)
+    for grid in (near, lin, sm, sm_scalar):
+        assert grid.shape == (n // 2 + 1, n)
+        assert np.all(np.isfinite(grid))
+    # The modes must actually differ.
+    assert not np.array_equal(near, lin)
+    assert not np.array_equal(lin, sm)
+
+
+def test_to_grid_rejects_unknown_interp():
+    n = 64
+    with pytest.raises(ValueError, match="interp"):
+        g.to_grid(g.gft1d_real(np.ones(n)), n, interp="cubic")
+
+
 # ---- error cases ----------------------------------------------------------
 
 
