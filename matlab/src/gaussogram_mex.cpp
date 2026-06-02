@@ -104,6 +104,57 @@ GaussogramHandle* make_handle(int32_t scheme_id, size_t n, int32_t window_id, in
     return h;
 }
 
+// Interpret a real double signal matrix as either a single segment (vector) or
+// a batch (n x count matrix), writing the inferred dimensions to *n / *count.
+void infer_segments(const mxArray* sig_in, size_t* n, size_t* count) {
+    size_t rows = static_cast<size_t>(mxGetM(sig_in));
+    size_t cols = static_cast<size_t>(mxGetN(sig_in));
+    if (rows == 1 || cols == 1) {  // vector -> single segment
+        *n = rows * cols;
+        *count = 1;
+    } else {
+        *n = rows;
+        *count = cols;
+    }
+    require(*n > 0, "gaussogram:empty", "signal must be non-empty.");
+}
+
+// Run a forward transform through an existing engine into a freshly allocated
+// complex output (output_len x count); errors via mexErr on a non-OK status.
+mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in) {
+    require_real_double(sig_in, "gaussogram:sigType", "signal");
+    size_t n, count;
+    infer_segments(sig_in, &n, &count);
+    size_t olen = gaussogram_output_len(h);
+
+    mxArray* result = mxCreateNumericMatrix(olen, count, mxDOUBLE_CLASS, mxCOMPLEX);
+    double* out = reinterpret_cast<double*>(mxGetComplexDoubles(result));
+    const double* sig = mxGetDoubles(sig_in);
+
+    int32_t st;
+    if (count == 1) {
+        st = gaussogram_forward_real(h, sig, n, out, olen);
+    } else {
+        st = gaussogram_forward_real_batch(h, sig, n, count, out, olen * count);
+    }
+    if (st != GAUSSOGRAM_STATUS_OK) {
+        mxDestroyArray(result);
+        mexErrMsgIdAndTxt("gaussogram:forward",
+                          "forward failed with status %d (%s).", st, status_message(st));
+    }
+    return result;
+}
+
+// Read a persistent engine handle passed back from MATLAB as a uint64 scalar.
+GaussogramHandle* read_handle(const mxArray* arg) {
+    require(mxIsUint64(arg) && mxIsScalar(arg), "gaussogram:handle",
+            "handle must be a uint64 scalar.");
+    uint64_t v = *static_cast<const uint64_t*>(mxGetData(arg));
+    GaussogramHandle* h = reinterpret_cast<GaussogramHandle*>(static_cast<uintptr_t>(v));
+    require(h != nullptr, "gaussogram:handle", "handle is null (already destroyed?).");
+    return h;
+}
+
 // op = 'forward': forward transform of a real signal matrix (n x count;
 // each column is a segment). Returns complex (output_len x count).
 void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
@@ -111,18 +162,8 @@ void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
             "forward expects (op, signal, scheme_id, window_id, nyquist_flat_top).");
     const mxArray* sig_in = prhs[1];
     require_real_double(sig_in, "gaussogram:sigType", "signal");
-
-    size_t rows = static_cast<size_t>(mxGetM(sig_in));
-    size_t cols = static_cast<size_t>(mxGetN(sig_in));
     size_t n, count;
-    if (rows == 1 || cols == 1) {  // vector -> single segment
-        n = rows * cols;
-        count = 1;
-    } else {
-        n = rows;
-        count = cols;
-    }
-    require(n > 0, "gaussogram:empty", "signal must be non-empty.");
+    infer_segments(sig_in, &n, &count);
 
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
@@ -130,23 +171,56 @@ void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 
     Handle h;
     h.ptr = make_handle(scheme_id, n, window_id, nyquist);
-    size_t olen = gaussogram_output_len(h.ptr);
+    plhs[0] = forward_into_output(h.ptr, sig_in);
+    (void)nlhs;
+}
 
-    plhs[0] = mxCreateNumericMatrix(olen, count, mxDOUBLE_CLASS, mxCOMPLEX);
-    double* out = reinterpret_cast<double*>(mxGetComplexDoubles(plhs[0]));
-    const double* sig = mxGetDoubles(sig_in);
+// op = 'create': build a persistent engine and return its pointer as a uint64
+// scalar (plhs[0]); optionally its output_len (plhs[1]). mexLock keeps the MEX
+// resident so live handles are not orphaned by `clear`. Pair with 'destroy'.
+void op_create(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    require(nrhs == 5, "gaussogram:nrhs",
+            "create expects (op, n, scheme_id, window_id, nyquist_flat_top).");
+    size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
+    int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
+    int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
+    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
 
-    int32_t st;
-    if (count == 1) {
-        st = gaussogram_forward_real(h.ptr, sig, n, out, olen);
-    } else {
-        st = gaussogram_forward_real_batch(h.ptr, sig, n, count, out, olen * count);
+    GaussogramHandle* h = make_handle(scheme_id, n, window_id, nyquist);
+    mexLock();
+
+    plhs[0] = mxCreateNumericMatrix(1, 1, mxUINT64_CLASS, mxREAL);
+    *static_cast<uint64_t*>(mxGetData(plhs[0])) =
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(h));
+    if (nlhs > 1) {
+        plhs[1] = mxCreateDoubleScalar(static_cast<double>(gaussogram_output_len(h)));
     }
-    if (st != GAUSSOGRAM_STATUS_OK) {
-        mexErrMsgIdAndTxt("gaussogram:forward",
-                          "forward failed with status %d (%s).", st, status_message(st));
+}
+
+// op = 'forward_handle': forward transform through a persistent engine.
+// (op, handle (uint64), signal) -> complex (output_len x count).
+void op_forward_handle(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    require(nrhs == 3, "gaussogram:nrhs", "forward_handle expects (op, handle, signal).");
+    GaussogramHandle* h = read_handle(prhs[1]);
+    plhs[0] = forward_into_output(h, prhs[2]);
+    (void)nlhs;
+}
+
+// op = 'destroy': free a persistent engine and release one mexLock.
+void op_destroy(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    require(nrhs == 2, "gaussogram:nrhs", "destroy expects (op, handle).");
+    require(mxIsUint64(prhs[1]) && mxIsScalar(prhs[1]), "gaussogram:handle",
+            "handle must be a uint64 scalar.");
+    uint64_t v = *static_cast<const uint64_t*>(mxGetData(prhs[1]));
+    GaussogramHandle* h = reinterpret_cast<GaussogramHandle*>(static_cast<uintptr_t>(v));
+    if (h != nullptr) {
+        gaussogram_destroy(h);
+        if (mexIsLocked()) {
+            mexUnlock();
+        }
     }
     (void)nlhs;
+    (void)plhs;
 }
 
 // op = 'output_len': (op, n, scheme_id, window_id, nyquist) -> scalar double.
@@ -264,6 +338,12 @@ extern "C" void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* 
 
     if (op == "forward") {
         op_forward(nlhs, plhs, nrhs, prhs);
+    } else if (op == "create") {
+        op_create(nlhs, plhs, nrhs, prhs);
+    } else if (op == "forward_handle") {
+        op_forward_handle(nlhs, plhs, nrhs, prhs);
+    } else if (op == "destroy") {
+        op_destroy(nlhs, plhs, nrhs, prhs);
     } else if (op == "output_len") {
         op_output_len(nlhs, plhs, nrhs, prhs);
     } else if (op == "scheme_bands") {

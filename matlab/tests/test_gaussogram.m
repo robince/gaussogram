@@ -16,6 +16,9 @@ passed = passed + run_case(@t_scheme_bands_layout);
 passed = passed + run_case(@t_to_grid_modes);
 passed = passed + run_case(@t_rejects_complex_input);
 passed = passed + run_case(@t_rejects_non_power_of_two);
+passed = passed + run_case(@t_handle_matches_function);
+passed = passed + run_case(@t_handle_reused_and_batch);
+passed = passed + run_case(@t_handle_rejects_wrong_length);
 
 fprintf('\nAll %d gaussogram test cases passed.\n', passed);
 end
@@ -133,4 +136,51 @@ catch
     threw = true;
 end
 assert_true(threw, 'non-power-of-two length should be rejected');
+end
+
+function t_handle_matches_function()
+n = 256;
+t = (0:n-1)' / n;
+sig = sin(2 * pi * 11 * t);
+eng = Gaussogram1d(n);
+assert_true(eng.n == n, 'engine n should match');
+assert_true(eng.output_len == gaussogram_output_len(n), 'engine output_len should match');
+c_handle = eng.forward(sig);
+c_func = gaussogram(sig);
+assert_true(max(abs(c_handle - c_func)) < 1e-12, ...
+    'reusable engine should match the one-shot function bit-for-bit');
+delete(eng);
+end
+
+function t_handle_reused_and_batch()
+n = 128;
+eng = Gaussogram1d(n);
+rng(7);
+% Repeated single-segment calls should be stable and match the function.
+for k = 1:4
+    x = randn(n, 1);
+    assert_true(max(abs(eng.forward(x) - gaussogram(x))) < 1e-12, ...
+        sprintf('reused engine call %d should match function', k));
+end
+% Batch through the same engine.
+X = randn(n, 6);
+batch = eng.forward(X);
+assert_true(isequal(size(batch), [n - 1, 6]), 'engine batch shape should be (N-1) x count');
+for c = 1:6
+    assert_true(max(abs(batch(:, c) - eng.forward(X(:, c)))) < 1e-12, ...
+        'engine batch column should match single transform');
+end
+delete(eng);
+end
+
+function t_handle_rejects_wrong_length()
+eng = Gaussogram1d(64);
+threw = false;
+try
+    eng.forward(ones(128, 1));   % length mismatch
+catch
+    threw = true;
+end
+assert_true(threw, 'engine should reject a wrong-length signal');
+delete(eng);
 end
