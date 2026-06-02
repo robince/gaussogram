@@ -48,33 +48,45 @@ def band_energy(coeffs, layout):
     return np.array(fc), np.array(energy), np.array(is_b)
 
 
-def plot_tf(ax, coeffs, scheme, title):
-    grid = g.to_grid(coeffs, N, scheme=scheme, nyquist_flat_top=True, interp="linear")
-    im = ax.imshow(
-        grid, origin="lower", aspect="auto",
-        extent=[0, N, 0, grid.shape[0]], cmap="magma",
-    )
-    ax.set_title(title)
-    ax.set_xlabel("time (samples)")
-    ax.set_ylabel("freq bin")
-    return im
+def make_grid(coeffs, scheme):
+    return g.to_grid(coeffs, N, scheme=scheme, nyquist_flat_top=True, interp="linear")
 
 
 # %% [markdown]
 # ## Time-frequency images (2x2): {centre, edge} x {single tiling, dual scheme}
 #
-# At the centre frequency both schemes localise cleanly. At the edge, the single
-# tiling smears the tone across the two neighbouring A bands (a vertical spread),
-# while the dual scheme keeps it tight in the B band centred on the join.
+# **All four panels share one colour scale**, so brightness is comparable across
+# them. At the centre frequency both schemes localise cleanly and bright. At the
+# edge, the single tiling (`dyadic_real`) drops the tone into the Gaussian dead
+# zone — its panel is nearly black (~18x weaker) — while the dual scheme's B band
+# centred on the join recovers it.
+#
+# Caveat: |coeff| is not normalised for band width (a line of weight V over a
+# width-w band gives magnitude V/w), so a wider band looks dimmer for the same
+# captured energy. The per-band *energy* stems below are the fairer comparison.
 
 # %%
-fig, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=True, sharey=True)
+panels = []  # (row, col, title, grid)
 for i, (label, f) in enumerate([("centre f=48", CENTRE_F), ("edge/join f=64", EDGE_F)]):
     c = g.gft1d_real(tone(f), scheme="dyadic_dual_real", nyquist_flat_top=True)
     c_real = g.gft1d_real(tone(f), scheme="dyadic_real", nyquist_flat_top=True)
-    plot_tf(axes[i, 0], c_real, "dyadic_real", f"{label} — dyadic_real (tiling A only)")
-    im = plot_tf(axes[i, 1], c, "dyadic_dual_real", f"{label} — dyadic_dual_real")
-fig.colorbar(im, ax=axes, label="|coeff|", pad=0.01)
+    panels.append((i, 0, f"{label} — dyadic_real (tiling A only)", make_grid(c_real, "dyadic_real")))
+    panels.append((i, 1, f"{label} — dyadic_dual_real", make_grid(c, "dyadic_dual_real")))
+
+vmax = max(grid.max() for *_, grid in panels)  # shared scale across all panels
+
+fig, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=True, sharey=True)
+im = None
+for row, col, title, grid in panels:
+    ax = axes[row, col]
+    im = ax.imshow(
+        grid, origin="lower", aspect="auto",
+        extent=[0, N, 0, grid.shape[0]], cmap="magma", vmin=0, vmax=vmax,
+    )
+    ax.set_title(title, fontsize=10)
+    ax.set_xlabel("time (samples)")
+    ax.set_ylabel("freq bin")
+fig.colorbar(im, ax=axes, label="|coeff| (shared scale)", pad=0.01)
 fig.suptitle("Tone at band centre vs band edge")
 plt.show()
 
