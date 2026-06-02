@@ -14,6 +14,7 @@
 # %%
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 import gaussogram as g
 
@@ -65,6 +66,7 @@ def plot_gaussogram(
     scheme="dyadic_dual_real",
     interp="linear",
     smooth=None,
+    log=False,
 ):
     coeffs = g.gft1d_real(signal, scheme=scheme, nyquist_flat_top=True)
     grid = g.to_grid(
@@ -80,16 +82,27 @@ def plot_gaussogram(
     ax_sig.set_ylabel("amplitude")
     ax_sig.margins(x=0)
 
+    # A log color scale is useful when one component (e.g. a boxcar's DC lobe)
+    # is orders of magnitude larger than the rest and would otherwise hide it.
+    norm = None
+    data = grid
+    if log:
+        m = grid.max()
+        floor = (m * 1e-3) if m > 0 else 1e-12
+        norm = mcolors.LogNorm(vmin=floor, vmax=max(m, floor * 10))
+        data = np.maximum(grid, floor)
+
     im = ax_tf.imshow(
-        grid,
+        data,
         origin="lower",
         aspect="auto",
         extent=[0, len(signal), 0, grid.shape[0]],
         cmap="magma",
+        norm=norm,
     )
     ax_tf.set_xlabel("time (samples)")
     ax_tf.set_ylabel("frequency (bin)")
-    fig.colorbar(im, ax=ax_tf, label="|coeff|", pad=0.01)
+    fig.colorbar(im, ax=ax_tf, label="|coeff|" + (" (log)" if log else ""), pad=0.01)
     fig.tight_layout()
     return fig
 
@@ -137,11 +150,13 @@ plt.show()
 # %% [markdown]
 # ## Boxcar
 #
-# A rectangular pulse: a low-frequency lobe spanning its duration, plus
-# broadband energy concentrated at the two switching edges.
+# A rectangular pulse is dominated by its DC / low-frequency lobe (|coeff| ~ 100
+# at the bottom), with the broadband edge energy ~100x smaller. On a linear
+# colour scale the edges are invisible, so we use a log scale here to reveal the
+# faint high-frequency energy concentrated at the two switching edges.
 
 # %%
-plot_gaussogram(boxcar(0.4, 0.6), "Boxcar over t in [0.4*N, 0.6*N)")
+plot_gaussogram(boxcar(0.4, 0.6), "Boxcar over t in [0.4*N, 0.6*N)  (log colour)", log=True)
 plt.show()
 
 # %% [markdown]
