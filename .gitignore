@@ -26,6 +26,14 @@ wheels/
 /python/gaussogram/_native*.so
 /python/gaussogram/_native*.pyd
 
+# ---- MATLAB MEX (compiled by build_mex; regenerate from matlab/src) ----
+/matlab/*.mexa64
+/matlab/*.mexmaca64
+/matlab/*.mexmaci64
+/matlab/*.mexw64
+/matlab/*.mexw32
+/matlab/*.mexglx
+
 # ---- golden vector generator (compiled binary; regenerate from gen_golden.c) ----
 /golden/gen_golden
 /golden/*.o

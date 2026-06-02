@@ -210,6 +210,93 @@ pub unsafe extern "C" fn gaussogram_complex_partitions(
     result.unwrap_or(-1)
 }
 
+/// Inverse transform for invertible real schemes (currently `dyadic_real`).
+/// `coeffs` has `2 * coeffs_len_complex` doubles (interleaved re,im); `out` has
+/// `out_len` doubles (the reconstructed real signal, length N).
+///
+/// # Safety
+/// Pointers must be valid for the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_inverse_real(
+    handle: *const GaussogramHandle,
+    coeffs: *const f64,
+    coeffs_len_complex: usize,
+    out: *mut f64,
+    out_len: usize,
+) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        if handle.is_null() || coeffs.is_null() || out.is_null() {
+            return STATUS_INTERNAL;
+        }
+        let engine = unsafe { &(*handle).engine };
+        let c = unsafe { slice::from_raw_parts(coeffs as *const Complex<f64>, coeffs_len_complex) };
+        let out_real = unsafe { slice::from_raw_parts_mut(out, out_len) };
+        match engine.inverse(c, out_real) {
+            Ok(()) => STATUS_OK,
+            Err(e) => e.status_code(),
+        }
+    }));
+    result.unwrap_or(STATUS_INTERNAL)
+}
+
+/// Number of bands in the engine's scheme (rows to fill when building a
+/// time-frequency display grid). Returns -1 on a null handle.
+///
+/// # Safety
+/// `handle` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_num_bands(handle: *const GaussogramHandle) -> i32 {
+    if handle.is_null() {
+        return -1;
+    }
+    unsafe { (*handle).engine.scheme().bands.len() as i32 }
+}
+
+/// Write the per-band layout into four caller-provided `i64` buffers
+/// (`src_lo`, `width`, `fcentre`, `out_off`), each of capacity `cap`. Returns
+/// the number of bands written, or -1 on error. Mirrors the Python
+/// `scheme_bands` helper; used to map packed coefficients onto a freq-time grid.
+///
+/// # Safety
+/// All four output pointers must be valid for `cap` `i64`s.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_scheme_bands(
+    handle: *const GaussogramHandle,
+    out_lo: *mut i64,
+    out_width: *mut i64,
+    out_fcentre: *mut i64,
+    out_off: *mut i64,
+    cap: usize,
+) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        if handle.is_null()
+            || out_lo.is_null()
+            || out_width.is_null()
+            || out_fcentre.is_null()
+            || out_off.is_null()
+        {
+            return -1;
+        }
+        let scheme = unsafe { (*handle).engine.scheme() };
+        let nb = scheme.bands.len();
+        if nb > cap {
+            return -1;
+        }
+        let lo = unsafe { slice::from_raw_parts_mut(out_lo, nb) };
+        let width = unsafe { slice::from_raw_parts_mut(out_width, nb) };
+        let fcentre = unsafe { slice::from_raw_parts_mut(out_fcentre, nb) };
+        let off = unsafe { slice::from_raw_parts_mut(out_off, nb) };
+        for (i, (b, w)) in scheme.bands.iter().zip(scheme.windows.iter()).enumerate() {
+            lo[i] = b.src_lo as i64;
+            width[i] = b.width() as i64;
+            fcentre[i] = w.fcentre as i64;
+            off[i] = b.out_off as i64;
+        }
+        nb as i32
+    }));
+    result.unwrap_or(-1)
+}
+
 /// Reserved for a future name-based constructor; currently unused.
 ///
 /// # Safety
