@@ -38,11 +38,15 @@ plot_gaussogram(sig, N, 'Tone + chirp + impulse');
 sig = tone(N, 96, 0.5);
 c = gaussogram(sig);
 figure('Name', 'Interpolation comparison');
-tiledlayout(1, 3, 'TileSpacing', 'compact');
-nexttile; show_grid(gaussogram_to_grid(c, N, 'interp', 'nearest'), N); title('nearest');
-nexttile; show_grid(gaussogram_to_grid(c, N, 'interp', 'linear'), N); title('linear');
-nexttile; show_grid(gaussogram_to_grid(c, N, 'interp', 'linear', 'smooth', [2, 4]), N);
-title('linear + smooth');
+tiledlayout(1, 4, 'TileSpacing', 'compact');
+nexttile; show_grid(gaussogram_to_grid(c, N, 'interp', 'nearest', 'interp_freq', 'block'), N);
+title('nearest time / block freq');
+nexttile; show_grid(gaussogram_to_grid(c, N, 'interp', 'linear', 'interp_freq', 'block'), N);
+title('linear time / block freq');
+nexttile; show_grid(gaussogram_to_grid(c, N, 'interp', 'linear', 'interp_freq', 'linear'), N);
+title('linear time + linear freq');
+nexttile; show_grid(gaussogram_to_grid(c, N, 'interp', 'linear', 'interp_freq', 'linear', 'smooth', [2, 4]), N);
+title('linear t+f + Gaussian smooth');
 
 %% -- local helpers --------------------------------------------------------
 

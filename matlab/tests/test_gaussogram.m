@@ -112,10 +112,20 @@ c = gaussogram(sig);
 g_lin = gaussogram_to_grid(c, n, 'interp', 'linear');
 g_near = gaussogram_to_grid(c, n, 'interp', 'nearest');
 g_smooth = gaussogram_to_grid(c, n, 'interp', 'linear', 'smooth', [2, 4]);
+g_blockf = gaussogram_to_grid(c, n, 'interp', 'linear', 'interp_freq', 'block');
+g_linf = gaussogram_to_grid(c, n, 'interp', 'linear', 'interp_freq', 'linear');
+g_linf_sm = gaussogram_to_grid(c, n, 'interp', 'linear', 'interp_freq', 'linear', 'smooth', [2, 4]);
 assert_true(isequal(size(g_lin), [n / 2 + 1, n]), 'grid shape should be (N/2+1) x N');
+assert_true(isequal(size(g_linf), [n / 2 + 1, n]), 'linear-freq grid shape should be (N/2+1) x N');
 assert_true(all(isfinite(g_lin(:))) && all(isfinite(g_near(:))) && all(isfinite(g_smooth(:))), ...
     'grids should be finite');
+assert_true(all(isfinite(g_linf(:))) && all(isfinite(g_linf_sm(:))), 'freq-interp grids should be finite');
 assert_true(all(g_lin(:) >= 0), 'magnitude grid should be nonnegative');
+% 'block' is the default, so it must match an explicit interp_freq='block'.
+assert_true(isequal(g_lin, g_blockf), "interp_freq='block' should be the default");
+% Frequency interpolation must change the result vs block fill.
+assert_true(~isequal(g_blockf, g_linf), "interp_freq='linear' should differ from 'block'");
+assert_true(~isequal(g_linf, g_linf_sm), 'smoothing should change the linear-freq grid');
 end
 
 function t_rejects_complex_input()

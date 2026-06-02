@@ -65,13 +65,14 @@ def plot_gaussogram(
     title,
     scheme="dyadic_dual_real",
     interp="linear",
+    interp_freq="block",
     smooth=None,
     log=False,
 ):
     coeffs = g.gft1d_real(signal, scheme=scheme, nyquist_flat_top=True)
     grid = g.to_grid(
         coeffs, len(signal), scheme=scheme, nyquist_flat_top=True,
-        interp=interp, smooth=smooth,
+        interp=interp, interp_freq=interp_freq, smooth=smooth,
     )
 
     fig, (ax_sig, ax_tf) = plt.subplots(
@@ -202,21 +203,27 @@ plt.show()
 # the band widths, not by an N x N/2 dense Stockwell grid — that sparsity is the
 # whole point of the representation, but it shows up as blockiness here.
 #
-# `to_grid` exposes the resampling:
-# - `interp="nearest"`: raw step/block sampling — you can see the individual
-#   coefficient cells.
-# - `interp="linear"` (default): piecewise-linear in time — smooths the time axis.
-# - `smooth=(sf, st)`: an extra separable Gaussian blur (sigma in cells) that
-#   also softens the hard block edges across frequency.
+# `to_grid` exposes the resampling on both axes:
+# - `interp` (time): `"nearest"` raw step/block sampling — you can see the
+#   individual coefficient cells; `"linear"` piecewise-linear in time.
+# - `interp_freq` (frequency): `"block"` (default) flat-fills each band's rows,
+#   leaving horizontal seams; `"linear"` anchors each band at its centre and
+#   interpolates between band centres, removing the seams.
+# - `smooth=(sf, st)`: an extra separable Gaussian blur (sigma in cells) in both
+#   directions for a fully smooth render.
 
 # %%
 demo_sig = tone(24) + 0.8 * tone(150) + 0.9 * chirp(40, 110)
-for interp, smooth, label in [
-    ("nearest", None, "nearest (raw cells)"),
-    ("linear", None, "linear in time"),
-    ("linear", (2.0, 4.0), "linear + Gaussian smooth (sigma_f=2, sigma_t=4)"),
+for interp, interp_freq, smooth, label in [
+    ("nearest", "block", None, "nearest time / block freq (raw cells)"),
+    ("linear", "block", None, "linear time / block freq"),
+    ("linear", "linear", None, "linear time + linear freq"),
+    ("linear", "linear", (2.0, 4.0), "linear t+f + Gaussian smooth (sigma_f=2, sigma_t=4)"),
 ]:
-    plot_gaussogram(demo_sig, f"Multi-component — {label}", interp=interp, smooth=smooth)
+    plot_gaussogram(
+        demo_sig, f"Multi-component — {label}",
+        interp=interp, interp_freq=interp_freq, smooth=smooth,
+    )
 plt.show()
 
 # %% [markdown]

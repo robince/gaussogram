@@ -3,13 +3,19 @@
 #
 # The transform stores only ~N coefficients: each band carries `width` complex
 # samples spanning the whole record. To draw an `(N/2+1, N)` image, `to_grid`
-# resamples each band's magnitude along time and block-fills it across the
-# frequency rows the band covers. This script compares the resampling options:
+# resamples each band's magnitude along **time** (`interp`) and then places it on
+# the **frequency** axis (`interp_freq`). This script compares the four useful
+# combinations:
 #
-# - `interp="nearest"` — raw step/block cells (you can see individual coeffs)
-# - `interp="linear"`  — piecewise-linear in time (smooth time axis)
-# - `interp="linear", smooth=(sf, st)` — extra separable Gaussian blur that also
-#   softens the hard block edges across frequency
+# 1. `interp="nearest", interp_freq="block"` — rawest: step cells in time,
+#    flat blocks in frequency (you can see the individual coefficient footprints)
+# 2. `interp="linear",  interp_freq="block"` — piecewise-linear in time, still
+#    block-filled in frequency (the previous default)
+# 3. `interp="linear",  interp_freq="linear"` — also interpolate across
+#    frequency: each band is anchored at its centre and linearly blended with
+#    its neighbours, removing the horizontal block seams
+# 4. `interp="linear",  interp_freq="linear", smooth=(sf, st)` — plus a separable
+#    Gaussian blur in **both** directions for a fully smooth render
 #
 # Build the extension first: `maturin develop --release`
 
@@ -45,9 +51,11 @@ signal = tone(36) + 0.8 * tone(140) + 0.9 * chirp(40, 110)
 coeffs = g.gft1d_real(signal, nyquist_flat_top=True)
 
 MODES = [
-    ("nearest (raw cells)", dict(interp="nearest")),
-    ("linear in time", dict(interp="linear")),
-    ("linear + Gaussian smooth", dict(interp="linear", smooth=(2.0, 4.0))),
+    ("nearest time / block freq", dict(interp="nearest", interp_freq="block")),
+    ("linear time / block freq", dict(interp="linear", interp_freq="block")),
+    ("linear time + linear freq", dict(interp="linear", interp_freq="linear")),
+    ("linear t+f + Gaussian smooth",
+     dict(interp="linear", interp_freq="linear", smooth=(2.0, 4.0))),
 ]
 
 # %% [markdown]
@@ -59,7 +67,7 @@ MODES = [
 grids = [g.to_grid(coeffs, N, nyquist_flat_top=True, **kw) for _, kw in MODES]
 vmax = max(gd.max() for gd in grids)
 
-fig, axes = plt.subplots(1, 3, figsize=(15, 4.2), sharex=True, sharey=True)
+fig, axes = plt.subplots(1, 4, figsize=(18, 4.2), sharex=True, sharey=True)
 im = None
 for ax, (name, _), grid in zip(axes, MODES, grids):
     im = ax.imshow(
@@ -74,12 +82,13 @@ fig.suptitle("Display interpolation: tones (36, 140) + chirp (40->110)")
 plt.show()
 
 # %% [markdown]
-# ## 1-D time cross-section through a single band
+# ## 1-D time cross-section through a single frequency row
 #
-# Slicing one frequency row makes the resampling explicit. The chosen row is
-# covered by a band with only a handful of time samples, so `nearest` shows
-# discrete steps, `linear` connects them with straight segments, and the smooth
-# option rounds the corners.
+# Slicing one frequency row makes the resampling explicit. The chosen row sits
+# inside a band with only a handful of time samples, so `nearest` shows discrete
+# steps and `linear` connects them with straight segments. The `linear freq`
+# mode can shift the level too: instead of the single covering band, the row's
+# value is interpolated between the band centres above and below it.
 
 # %%
 row = 20  # inside the fc~24 band (width 16): ~16 samples across N

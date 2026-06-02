@@ -124,6 +124,27 @@ def test_to_grid_rejects_unknown_interp():
         g.to_grid(g.gft1d_real(np.ones(n)), n, interp="cubic")
 
 
+def test_to_grid_interp_freq_modes():
+    n = 128
+    x = np.cos(2 * np.pi * 20 * np.arange(n) / n)
+    coeffs = g.gft1d_real(x)
+    block = g.to_grid(coeffs, n, interp="linear", interp_freq="block")
+    linf = g.to_grid(coeffs, n, interp="linear", interp_freq="linear")
+    linf_sm = g.to_grid(coeffs, n, interp="linear", interp_freq="linear", smooth=(2.0, 4.0))
+    for grid in (block, linf, linf_sm):
+        assert grid.shape == (n // 2 + 1, n)
+        assert np.all(np.isfinite(grid))
+    # Frequency interpolation must change the result vs block fill.
+    assert not np.array_equal(block, linf)
+    assert not np.array_equal(linf, linf_sm)
+
+
+def test_to_grid_rejects_unknown_interp_freq():
+    n = 64
+    with pytest.raises(ValueError, match="interp_freq"):
+        g.to_grid(g.gft1d_real(np.ones(n)), n, interp_freq="quadratic")
+
+
 # ---- error cases ----------------------------------------------------------
 
 

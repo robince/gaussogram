@@ -161,6 +161,35 @@ def _gaussian_blur(grid: NDArray[np.float64], sigma) -> NDArray[np.float64]:
     return out
 
 
+def _interp_freq_grid(
+    node_freqs: NDArray[np.float64],
+    node_profiles: NDArray[np.float64],
+    nfreq: int,
+) -> NDArray[np.float64]:
+    """Linearly interpolate band-centre profiles across the frequency axis.
+
+    ``node_profiles`` is ``(M, N)``: one time-row per band, anchored at the
+    band's centre frequency ``node_freqs`` (length ``M``, sorted ascending). For
+    each output row ``r`` in ``[0, nfreq)`` we interpolate, column by column,
+    between the two band centres that bracket ``r``. Rows outside the centre
+    range are clamped to the nearest band (the np.interp endpoint convention).
+    """
+    x = np.arange(nfreq, dtype=np.float64)
+    xp = node_freqs.astype(np.float64)
+    m = xp.shape[0]
+    if m == 1:
+        return np.repeat(node_profiles, nfreq, axis=0)
+    idx = np.clip(np.searchsorted(xp, x, side="right") - 1, 0, m - 2)
+    x0 = xp[idx]
+    x1 = xp[idx + 1]
+    denom = x1 - x0
+    w = np.where(denom > 0, (x - x0) / denom, 0.0)
+    w = np.clip(w, 0.0, 1.0)  # clamp rows below/above the centre range
+    lo_prof = node_profiles[idx]
+    hi_prof = node_profiles[idx + 1]
+    return (1.0 - w)[:, None] * lo_prof + w[:, None] * hi_prof
+
+
 def to_grid(
     coeffs,
     n: int,
@@ -168,56 +197,83 @@ def to_grid(
     window_type: str = "gaussian",
     nyquist_flat_top: bool = False,
     interp: str = "linear",
+    interp_freq: str = "block",
     smooth=None,
 ) -> NDArray[np.float64]:
     """Render packed GFT coefficients onto a ``(N/2+1, N)`` magnitude grid for
     display: frequency on the vertical axis, time on the horizontal.
 
     Each band carries ``width`` complex samples spanning the full signal
-    duration. The band magnitude is resampled to ``N`` time points and written
-    to every frequency row the band covers (block fill in frequency). For the
-    overlapping dual scheme, the larger magnitude wins per (freq, time) cell.
+    duration. The band magnitude is first resampled to ``N`` time points
+    (``interp``), then placed on the frequency axis (``interp_freq``).
 
     Parameters
     ----------
     interp:
         Time-axis resampling of each band's magnitude:
         ``"linear"`` (default) piecewise-linear interpolation between the band's
-        ``width`` samples — smooth; ``"nearest"`` block/step sampling (the
-        original behaviour) — shows the raw coefficient cells.
+        ``width`` samples — smooth; ``"nearest"`` block/step sampling — shows
+        the raw coefficient cells.
+    interp_freq:
+        Frequency-axis placement of each band's resampled time-row:
+        ``"block"`` (default) copies the row into every frequency row the band
+        covers (a flat block), and overlapping bands are combined by keeping the
+        larger magnitude per cell — this matches the band footprints exactly.
+        ``"linear"`` instead anchors each band's row at its **centre frequency**
+        and linearly interpolates between adjacent band centres, giving a smooth
+        frequency axis with no block seams. With ``dyadic_dual_real`` the offset
+        B bands add extra centre nodes, so the interpolation is finer.
     smooth:
         Optional Gaussian blur applied to the assembled grid, in grid cells.
         A scalar blurs both axes equally; a ``(sigma_freq, sigma_time)`` pair
-        blurs per-axis. ``None`` (default) disables smoothing. This softens the
-        hard block edges in frequency that the constant-Q tiling produces.
+        blurs per-axis. ``None`` (default) disables smoothing. This further
+        softens whatever edges remain after ``interp``/``interp_freq``.
     """
     coeffs = np.ascontiguousarray(coeffs, dtype=np.complex128)
     layout = scheme_bands(n, scheme, window_type, nyquist_flat_top)
     nfreq = n // 2 + 1
-    grid = np.zeros((nfreq, n), dtype=np.float64)
 
     if interp not in ("linear", "nearest"):
         raise ValueError(f"interp must be 'linear' or 'nearest', got {interp!r}")
+    if interp_freq not in ("linear", "block"):
+        raise ValueError(
+            f"interp_freq must be 'linear' or 'block', got {interp_freq!r}"
+        )
 
     target_times = np.arange(n)
-    for lo, w, off in zip(layout.src_lo, layout.width, layout.out_off):
-        lo = int(lo)
-        w = int(w)
-        off = int(off)
+
+    def band_row(off: int, w: int) -> NDArray[np.float64]:
+        """Time-resample one band's magnitude to all ``N`` columns."""
         mag = np.abs(coeffs[off : off + w])
         if w == 1:
-            row = np.full(n, mag[0])
-        else:
-            band_times = np.linspace(0, n - 1, w)
-            if interp == "nearest":
-                idx = np.abs(target_times[:, None] - band_times[None, :]).argmin(axis=1)
-                row = mag[idx]
-            else:  # linear
-                row = np.interp(target_times, band_times, mag)
-        hi = min(lo + w, nfreq)
-        if lo >= nfreq:
-            continue
-        grid[lo:hi, :] = np.maximum(grid[lo:hi, :], row[None, :])
+            return np.full(n, mag[0])
+        band_times = np.linspace(0, n - 1, w)
+        if interp == "nearest":
+            idx = np.abs(target_times[:, None] - band_times[None, :]).argmin(axis=1)
+            return mag[idx]
+        return np.interp(target_times, band_times, mag)
+
+    if interp_freq == "block":
+        grid = np.zeros((nfreq, n), dtype=np.float64)
+        for lo, w, off in zip(layout.src_lo, layout.width, layout.out_off):
+            lo, w, off = int(lo), int(w), int(off)
+            if lo >= nfreq:
+                continue
+            row = band_row(off, w)
+            hi = min(lo + w, nfreq)
+            grid[lo:hi, :] = np.maximum(grid[lo:hi, :], row[None, :])
+    else:  # linear in frequency: anchor each band at its centre, interpolate
+        nodes: dict[int, NDArray[np.float64]] = {}
+        for w, off, fc in zip(layout.width, layout.out_off, layout.fcentre):
+            w, off, fc = int(w), int(off), int(fc)
+            if fc >= nfreq:
+                continue
+            row = band_row(off, w)
+            # Two bands can share a centre (e.g. degenerate widths): keep max.
+            nodes[fc] = np.maximum(nodes[fc], row) if fc in nodes else row
+        node_freqs = np.array(sorted(nodes), dtype=np.float64)
+        node_profiles = np.stack([nodes[int(f)] for f in node_freqs])
+        grid = _interp_freq_grid(node_freqs, node_profiles, nfreq)
 
     if smooth is not None:
         grid = _gaussian_blur(grid, smooth)
