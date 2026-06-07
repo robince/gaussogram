@@ -5,6 +5,10 @@ choices: (1) how the default scheme fixes the octave-join "dead zone", and
 (2) how the transform sits relative to standard off-the-shelf time–frequency
 transforms.
 
+See also [**bands_per_octave.md**](bands_per_octave.md) — a focused report on the
+`bands_per_octave` option (sub-octave resolution at constant coefficient count),
+with impulse / tones / chirp examples on the dual scheme.
+
 Reproduce everything (figures + tables) with:
 
 ```bash

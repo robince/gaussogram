@@ -45,10 +45,11 @@ fn build_scheme(
     n: usize,
     kind: WindowKind,
     nyquist_flat_top: bool,
+    bands_per_octave: usize,
 ) -> PyResult<Scheme> {
     let s = match scheme {
-        "dyadic_dual_real" => dyadic_dual_real_with(n, kind, nyquist_flat_top),
-        "dyadic_real" => dyadic_real_with(n, kind),
+        "dyadic_dual_real" => dyadic_dual_real_with(n, kind, nyquist_flat_top, bands_per_octave),
+        "dyadic_real" => dyadic_real_with(n, kind, bands_per_octave),
         "dyadic_complex" => dyadic_complex_with(n, kind),
         other => {
             return Err(PyValueError::new_err(format!(
@@ -93,19 +94,20 @@ impl Drop for WriteableGuard {
 /// Convenience wrapper: builds a fresh engine per call. For repeated transforms
 /// of the same size/scheme, construct a `Gaussogram1d` once and reuse it.
 #[pyfunction]
-#[pyo3(signature = (x, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false))]
+#[pyo3(signature = (x, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false, bands_per_octave=1))]
 fn gft1d_real<'py>(
     py: Python<'py>,
     x: PyReadonlyArray1<'py, f64>,
     scheme: &str,
     window_type: &str,
     nyquist_flat_top: bool,
+    bands_per_octave: usize,
 ) -> PyResult<Bound<'py, PyArray1<Complex<f64>>>> {
     let kind = window_kind(window_type)?;
     let arr_ptr = x.as_array_ptr();
     let signal = x.as_slice()?;
     let n = signal.len();
-    let s = build_scheme(scheme, n, kind, nyquist_flat_top)?;
+    let s = build_scheme(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
     if s.complex_input {
         return Err(PyValueError::new_err(
             "gft1d_real requires a real-input scheme; use gft1d for dyadic_complex",
@@ -135,7 +137,7 @@ fn gft1d<'py>(
     let arr_ptr = z.as_array_ptr();
     let signal = z.as_slice()?;
     let n = signal.len();
-    let s = build_scheme("dyadic_complex", n, kind, false)?;
+    let s = build_scheme("dyadic_complex", n, kind, false, 1)?;
     let engine = build(s);
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![Complex::new(0.0, 0.0); engine.output_len()];
@@ -148,19 +150,21 @@ fn gft1d<'py>(
 }
 
 /// Inverse of the invertible `dyadic_real` scheme. `coeffs` has length N/2+1.
+/// `bands_per_octave` must match the value used for the forward transform.
 #[pyfunction]
-#[pyo3(signature = (coeffs, window_type="gaussian"))]
+#[pyo3(signature = (coeffs, window_type="gaussian", bands_per_octave=1))]
 fn inverse_real<'py>(
     py: Python<'py>,
     coeffs: PyReadonlyArray1<'py, Complex<f64>>,
     window_type: &str,
+    bands_per_octave: usize,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let kind = window_kind(window_type)?;
     let arr_ptr = coeffs.as_array_ptr();
     let c = coeffs.as_slice()?;
-    // Recover N from output_len = N/2 + 1.
+    // Recover N from output_len = N/2 + 1 (invariant to bands_per_octave).
     let n = (c.len() - 1) * 2;
-    let s = build_scheme("dyadic_real", n, kind, false)?;
+    let s = build_scheme("dyadic_real", n, kind, false, bands_per_octave)?;
     let engine = build(s);
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![0.0f64; n];
@@ -191,10 +195,16 @@ struct PyGaussogram {
 #[pymethods]
 impl PyGaussogram {
     #[new]
-    #[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false))]
-    fn new(n: usize, scheme: &str, window_type: &str, nyquist_flat_top: bool) -> PyResult<Self> {
+    #[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false, bands_per_octave=1))]
+    fn new(
+        n: usize,
+        scheme: &str,
+        window_type: &str,
+        nyquist_flat_top: bool,
+        bands_per_octave: usize,
+    ) -> PyResult<Self> {
         let kind = window_kind(window_type)?;
-        let s = build_scheme(scheme, n, kind, nyquist_flat_top)?;
+        let s = build_scheme(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
         let complex_input = s.complex_input;
         let invertible = s.invertible;
         let output_len = s.output_len;
@@ -326,13 +336,14 @@ fn real_partitions<'py>(py: Python<'py>, n: usize) -> PyResult<Bound<'py, PyArra
 /// Band layout of a scheme: parallel arrays (src_lo, width, fcentre, out_off).
 /// Used by Python helpers to map packed coefficients onto a frequency-time grid.
 #[pyfunction]
-#[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false))]
+#[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false, bands_per_octave=1))]
 fn scheme_bands<'py>(
     py: Python<'py>,
     n: usize,
     scheme: &str,
     window_type: &str,
     nyquist_flat_top: bool,
+    bands_per_octave: usize,
 ) -> PyResult<(
     Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<i64>>,
@@ -340,7 +351,7 @@ fn scheme_bands<'py>(
     Bound<'py, PyArray1<i64>>,
 )> {
     let kind = window_kind(window_type)?;
-    let s = build_scheme(scheme, n, kind, nyquist_flat_top)?;
+    let s = build_scheme(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
     let mut lo = Vec::with_capacity(s.bands.len());
     let mut width = Vec::with_capacity(s.bands.len());
     let mut fcentre = Vec::with_capacity(s.bands.len());
@@ -361,15 +372,16 @@ fn scheme_bands<'py>(
 
 /// Packed output length for a scheme.
 #[pyfunction]
-#[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false))]
+#[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false, bands_per_octave=1))]
 fn output_len(
     n: usize,
     scheme: &str,
     window_type: &str,
     nyquist_flat_top: bool,
+    bands_per_octave: usize,
 ) -> PyResult<usize> {
     let kind = window_kind(window_type)?;
-    Ok(build_scheme(scheme, n, kind, nyquist_flat_top)?.output_len)
+    Ok(build_scheme(scheme, n, kind, nyquist_flat_top, bands_per_octave)?.output_len)
 }
 
 #[pymodule]

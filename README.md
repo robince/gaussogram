@@ -42,6 +42,31 @@ the Gaussian "dead zones" at octave joins that the single dyadic cover suffers.
 `N` must be a power of two. The Gaussian window is the default; a `box` window is
 also available.
 
+### Bands per octave
+
+Both real schemes take a `bands_per_octave` option (a power of two: `1, 2, 4, …`,
+default `1`) that subdivides each dyadic octave into that many frequency
+sub-bands. This **rotates the time/frequency trade-off** — finer frequency
+resolution, coarser time resolution — at a *constant* coefficient count: because
+a band's width is both its frequency extent and its number of time samples,
+splitting an octave conserves the total, so `dyadic_real` stays `N/2 + 1` and
+`dyadic_dual_real` stays `N − 1` for **every** value. Subdivision keeps the
+critically-sampled `dyadic_real` cover a disjoint integer partition, so it
+remains exactly invertible. Running a few values (e.g. `1, 2, 4`) builds a
+complementary multiresolution picture for far less data than a dense
+`N × N/2` spectrogram.
+
+The default `dyadic_dual_real` scheme (`N − 1 = 511` coefficients here) at
+`bands_per_octave = 1, 2, 4` — an impulse, three staggered tones, and a chirp.
+Every panel stores the signal in the **same 511 coefficients**; raising
+`bands_per_octave` only trades time resolution for frequency resolution (the
+impulse ridge widens; the tones and chirp sharpen in frequency):
+
+![bands_per_octave on the dyadic_dual_real scheme](reports/figures/bpo_dyadic_dual_real.png)
+
+See [`reports/bands_per_octave.md`](reports/bands_per_octave.md) for the full
+write-up (including the invertible `dyadic_real` version).
+
 ## Install & quick start
 
 Build the native extension (needs a Rust toolchain and
@@ -64,6 +89,10 @@ grid = g.to_grid(c, len(x))          # (N/2+1, N) magnitude image for plotting
 coeffs = g.gft1d_real(x, scheme="dyadic_real")
 recon = g.inverse_real(coeffs)       # ~exact
 
+# Sub-octave resolution: 2 bands/octave, still N/2+1 coeffs, still invertible
+fine = g.gft1d_real(x, scheme="dyadic_real", bands_per_octave=2)
+recon2 = g.inverse_real(fine, bands_per_octave=2)   # ~exact
+
 # Reusable handle (builds FFT plans + scratch once; best for tight loops)
 h = g.Gaussogram1d(512, scheme="dyadic_real")
 c = h.forward(x); xr = h.inverse(c)
@@ -71,10 +100,10 @@ c = h.forward(x); xr = h.inverse(c)
 
 ### Python API
 
-- `gft1d_real(x, scheme=…, window_type=…, nyquist_flat_top=…)` — forward GFT of a real signal.
+- `gft1d_real(x, scheme=…, window_type=…, nyquist_flat_top=…, bands_per_octave=…)` — forward GFT of a real signal.
 - `gft1d(z, …)` — forward GFT of a complex signal (`dyadic_complex`).
-- `inverse_real(coeffs, …)` — inverse of the invertible `dyadic_real` scheme.
-- `Gaussogram1d(n, …)` — reusable engine handle (`.forward` / `.inverse`).
+- `inverse_real(coeffs, …, bands_per_octave=…)` — inverse of the invertible `dyadic_real` scheme (`bands_per_octave` must match the forward call).
+- `Gaussogram1d(n, …, bands_per_octave=…)` — reusable engine handle (`.forward` / `.inverse`).
 - `scheme_bands(n, …)` / `output_len(n, …)` — per-band geometry (`BandLayout`) and packed length.
 - `partitions(n)` / `real_partitions(n)` — legacy partition boundaries.
 - `to_grid(coeffs, n, …)` — render packed coefficients to a `(N/2+1, N)` image. Display options:
@@ -84,8 +113,9 @@ c = h.forward(x); xr = h.inverse(c)
   - `smooth` — optional Gaussian blur of the assembled grid.
 - `coefficient_geometry(n, …)` / `coefficient_adjacency(n, …)` — **basis
   geometry for downstream models** (signal-independent). The first gives each
-  coefficient's time-frequency tile (`time`, `freq`, `dt`, `df`, `level`,
-  `tiling`, …) as positional features; the second gives a sparse neighbourhood
+  coefficient's time-frequency tile (`time`, `freq`, `dt`, `df`, `level` octave
+  index, `sub` within-octave rank, `tiling`, …) as positional features; the
+  second gives a sparse neighbourhood
   graph (`time` / `band` / `dual` edges) for GNNs, graph-Laplacian smoothness, or
   structured-sparsity groups — letting a model use the packed ~N vector natively
   without densifying it to a grid.

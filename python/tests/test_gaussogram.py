@@ -356,3 +356,70 @@ def test_coefficient_adjacency_is_valid_graph():
 def test_coefficient_adjacency_single_tiling_has_no_dual_edges():
     adj = g.coefficient_adjacency(128, scheme="dyadic_real")
     assert int((adj.edge_type == 2).sum()) == 0  # no tiling B, so no dual edges
+
+
+# ---- bands_per_octave (sub-octave subdivision) ----------------------------
+
+
+@pytest.mark.parametrize("bpo", [1, 2, 4, 8])
+@pytest.mark.parametrize("n", [16, 64, 256, 512])
+def test_bands_per_octave_preserves_output_length(n, bpo):
+    # Subdivision conserves the coefficient count: real stays N/2+1, dual N-1.
+    assert g.output_len(n, "dyadic_real", bands_per_octave=bpo) == n // 2 + 1
+    assert g.output_len(n, "dyadic_dual_real", bands_per_octave=bpo) == n - 1
+
+
+@pytest.mark.parametrize("bpo", [2, 4, 8])
+@pytest.mark.parametrize("n", [16, 64, 256])
+def test_bands_per_octave_round_trip(n, bpo):
+    # dyadic_real stays exactly invertible for every power-of-two bands_per_octave.
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal(n)
+    coeffs = g.gft1d_real(x, scheme="dyadic_real", bands_per_octave=bpo)
+    assert len(coeffs) == n // 2 + 1
+    recon = g.inverse_real(coeffs, bands_per_octave=bpo)
+    np.testing.assert_allclose(recon, x, atol=1e-9)
+
+
+def test_bands_per_octave_subdivides_octaves():
+    # bpo=2 splits each splittable octave into two equal sub-bands.
+    base = g.scheme_bands(256, "dyadic_real", bands_per_octave=1)
+    sub = g.scheme_bands(256, "dyadic_real", bands_per_octave=2)
+    assert len(sub.width) > len(base.width)
+    # Tiling A remains a gap-free, overlap-free cover of 0..=N/2.
+    assert sub.src_lo[0] == 0
+    np.testing.assert_array_equal(sub.src_hi[:-1], sub.src_lo[1:])
+    assert sub.src_hi[-1] == 256 // 2 + 1
+
+
+@pytest.mark.parametrize("bpo", [0, 3, 6, 5])
+def test_bands_per_octave_rejects_non_power_of_two(bpo):
+    x = np.zeros(256)
+    with pytest.raises(ValueError, match="bands_per_octave"):
+        g.gft1d_real(x, scheme="dyadic_real", bands_per_octave=bpo)
+
+
+def test_bands_per_octave_geometry_level_and_sub():
+    n = 256
+    geo = g.coefficient_geometry(n, "dyadic_real", bands_per_octave=2)
+    # level is the octave index; sub ranks within the octave (0 or 1 for bpo=2).
+    assert set(geo.sub.tolist()).issubset({0, 1})
+    assert (geo.sub == 1).sum() > 0  # some octaves actually split
+    # tile area is still conserved
+    np.testing.assert_allclose(geo.dt * geo.df, n)
+    # within a band, (level, sub) is constant and matches log-frequency ordering
+    lay = g.scheme_bands(n, "dyadic_real", bands_per_octave=2)
+    for off, w in zip(lay.out_off, lay.width):
+        off, w = int(off), int(w)
+        assert len(set(geo.level[off : off + w].tolist())) == 1
+        assert len(set(geo.sub[off : off + w].tolist())) == 1
+
+
+def test_bands_per_octave_one_matches_default_layout():
+    # bpo=1 must be identical to the implicit single-band-per-octave cover.
+    for scheme in ("dyadic_real", "dyadic_dual_real"):
+        a = g.scheme_bands(256, scheme, bands_per_octave=1)
+        b = g.scheme_bands(256, scheme)
+        np.testing.assert_array_equal(a.src_lo, b.src_lo)
+        np.testing.assert_array_equal(a.width, b.width)
+        np.testing.assert_array_equal(a.fcentre, b.fcentre)

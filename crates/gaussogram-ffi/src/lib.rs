@@ -31,9 +31,11 @@ fn scheme_from_id(
     kind: WindowKind,
     nyquist_flat_top: bool,
 ) -> Option<gaussogram_core::Scheme> {
+    // The C ABI does not yet expose bands_per_octave; the one-band-per-octave
+    // cover (bpo = 1) keeps the existing ABI and golden parity unchanged.
     match scheme_id {
-        0 => dyadic_dual_real_with(n, kind, nyquist_flat_top).ok(),
-        1 => dyadic_real_with(n, kind).ok(),
+        0 => dyadic_dual_real_with(n, kind, nyquist_flat_top, 1).ok(),
+        1 => dyadic_real_with(n, kind, 1).ok(),
         2 => dyadic_complex_with(n, kind).ok(),
         _ => None,
     }

@@ -6,7 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use gaussogram_core::{
-    build, dyadic_dual_real, dyadic_dual_real_with, dyadic_real, GaussogramError, WindowKind,
+    build, dyadic_dual_real, dyadic_dual_real_with, dyadic_real, dyadic_real_with, GaussogramError,
+    WindowKind,
 };
 use num_complex::Complex;
 
@@ -93,6 +94,37 @@ fn real_round_trip() {
 }
 
 #[test]
+fn real_round_trip_subdivided_octaves() {
+    // dyadic_real stays exactly invertible for every power-of-two bands_per_octave.
+    for &bpo in &[2usize, 4, 8] {
+        for k in 4..=12 {
+            let n = 1usize << k;
+            let engine = build(dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap());
+            assert_eq!(engine.output_len(), n / 2 + 1, "N={n} bpo={bpo}");
+            let x: Vec<f64> = (0..n)
+                .map(|i| {
+                    let ii = i as f64;
+                    (2.0 * PI * 3.0 * ii / n as f64).sin()
+                        + 0.4 * (2.0 * PI * 11.0 * ii / n as f64).cos()
+                        + 0.1 * ii / n as f64
+                })
+                .collect();
+            let mut coeffs = vec![Complex::new(0.0, 0.0); engine.output_len()];
+            engine.forward(&x, &mut coeffs).unwrap();
+            let mut recon = vec![0.0f64; n];
+            engine.inverse(&coeffs, &mut recon).unwrap();
+            for (i, (a, b)) in x.iter().zip(recon.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-10,
+                    "N={n} bpo={bpo} sample {i}: diff={}",
+                    (a - b).abs()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn dual_is_not_invertible() {
     let engine = build(dyadic_dual_real(64).unwrap());
     let coeffs = vec![Complex::new(0.0, 0.0); engine.output_len()];
@@ -165,8 +197,8 @@ fn band_edge_tone_rescued_by_tiling_b() {
 #[test]
 fn nyquist_flat_top_changes_top_band_window() {
     let n = 256;
-    let plain = dyadic_dual_real_with(n, WindowKind::Gaussian, false).unwrap();
-    let flat = dyadic_dual_real_with(n, WindowKind::Gaussian, true).unwrap();
+    let plain = dyadic_dual_real_with(n, WindowKind::Gaussian, false, 1).unwrap();
+    let flat = dyadic_dual_real_with(n, WindowKind::Gaussian, true, 1).unwrap();
     // Top A band is the one ending at N/2+1.
     let top_idx = plain
         .bands

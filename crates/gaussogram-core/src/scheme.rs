@@ -56,6 +56,26 @@ fn check_pow2(n: usize) -> Result<(), GaussogramError> {
     Ok(())
 }
 
+/// `bands_per_octave` must be a power of two >= 1 so each dyadic octave (a
+/// power-of-two number of bins) divides into equal integer sub-bands.
+fn check_bpo(bpo: usize) -> Result<(), GaussogramError> {
+    if bpo == 0 || (bpo & (bpo - 1)) != 0 {
+        return Err(GaussogramError::BandsPerOctave(bpo));
+    }
+    Ok(())
+}
+
+/// Split `[lo, hi)` into `min(bpo, width)` equal sub-bands. The octave `width`
+/// and `bpo` are both powers of two, so when `bpo <= width` the division is
+/// exact; the `min` caps the count for low octaves that have fewer bins than
+/// `bpo` (e.g. the width-1 cover `[1, 2)` always stays a single band).
+fn split_pow2(lo: usize, hi: usize, bpo: usize) -> Vec<(usize, usize)> {
+    let width = hi - lo;
+    let k = bpo.min(width).max(1);
+    let sub = width / k;
+    (0..k).map(|i| (lo + i * sub, lo + (i + 1) * sub)).collect()
+}
+
 fn make_window(kind: WindowKind, n: usize, lo: usize, width: usize) -> Window {
     let fcentre = lo + width / 2;
     let screen = match kind {
@@ -71,43 +91,65 @@ fn make_window(kind: WindowKind, n: usize, lo: usize, width: usize) -> Window {
 }
 
 /// Tiling A: lossless dyadic cover of the positive half-spectrum `0..=N/2`.
+/// Each dyadic octave is subdivided into `min(bands_per_octave, octave_width)`
+/// equal sub-bands (`bpo = 1` reproduces the single-band-per-octave cover).
 /// Returns the bands (out_off filled sequentially from 0).
-fn tiling_a(n: usize, kind: WindowKind) -> (Vec<Band>, Vec<Window>) {
+fn tiling_a(n: usize, kind: WindowKind, bpo: usize) -> (Vec<Band>, Vec<Window>) {
     let mut bands = Vec::new();
     let mut windows = Vec::new();
     let mut out_off = 0usize;
-    let push = |lo: usize, hi: usize, out_off: &mut usize, windows: &mut Vec<Window>| -> Band {
-        let w = make_window(kind, n, lo, hi - lo);
-        windows.push(w);
-        let b = Band {
+    let push = |lo: usize,
+                hi: usize,
+                bands: &mut Vec<Band>,
+                windows: &mut Vec<Window>,
+                out_off: &mut usize| {
+        windows.push(make_window(kind, n, lo, hi - lo));
+        bands.push(Band {
             src_lo: lo,
             src_hi: hi,
             out_off: *out_off,
-        };
+        });
         *out_off += hi - lo;
-        b
     };
 
-    // Right edges: 1, 2, 4, ..., N/4, then N/2+1 (top octave including Nyquist).
+    // Octave covers [prev, edge) with right edges 1, 2, 4, ..., N/4, each split
+    // into power-of-two sub-bands.
     let mut prev = 0usize;
     let mut edge = 1usize;
     while edge <= n / 4 {
-        bands.push(push(prev, edge, &mut out_off, &mut windows));
+        for (lo, hi) in split_pow2(prev, edge, bpo) {
+            push(lo, hi, &mut bands, &mut windows, &mut out_off);
+        }
         prev = edge;
         edge *= 2;
     }
-    // Top band [N/4, N/2] inclusive => hi = N/2 + 1.
-    bands.push(push(prev, n / 2 + 1, &mut out_off, &mut windows));
+    // Top octave [N/4, N/2]: subdivide [N/4, N/2) and let the last sub-band carry
+    // the Nyquist bin (hi = N/2 + 1).
+    let subs = split_pow2(prev, n / 2, bpo);
+    let last = subs.len() - 1;
+    for (i, (lo, hi)) in subs.into_iter().enumerate() {
+        let hi = if i == last { n / 2 + 1 } else { hi };
+        push(lo, hi, &mut bands, &mut windows, &mut out_off);
+    }
     (bands, windows)
 }
 
 /// `dyadic_real` — baseline lossless single tiling (tiling A). Invertible.
 pub fn dyadic_real(n: usize) -> Result<Scheme, GaussogramError> {
-    dyadic_real_with(n, WindowKind::Gaussian)
+    dyadic_real_with(n, WindowKind::Gaussian, 1)
 }
 
-pub fn dyadic_real_with(n: usize, kind: WindowKind) -> Result<Scheme, GaussogramError> {
+/// `dyadic_real` with explicit window and `bands_per_octave` (power of two).
+/// Subdividing octaves keeps the cover a disjoint integer partition, so the
+/// scheme stays invertible and its output length is `N/2 + 1` for every `bpo` —
+/// it only rotates the time/frequency trade-off (finer frequency, coarser time).
+pub fn dyadic_real_with(
+    n: usize,
+    kind: WindowKind,
+    bands_per_octave: usize,
+) -> Result<Scheme, GaussogramError> {
     check_pow2(n)?;
+    check_bpo(bands_per_octave)?;
     if n < 4 {
         return Err(GaussogramError::TooSmall {
             scheme: "dyadic_real",
@@ -115,7 +157,7 @@ pub fn dyadic_real_with(n: usize, kind: WindowKind) -> Result<Scheme, Gaussogram
             got: n,
         });
     }
-    let (bands, windows) = tiling_a(n, kind);
+    let (bands, windows) = tiling_a(n, kind, bands_per_octave);
     let output_len = bands.iter().map(Band::width).sum();
     Ok(Scheme {
         name: "dyadic_real",
@@ -131,15 +173,21 @@ pub fn dyadic_real_with(n: usize, kind: WindowKind) -> Result<Scheme, Gaussogram
 
 /// `dyadic_dual_real` — the DEFAULT scheme. Tiling A followed by tiling B.
 pub fn dyadic_dual_real(n: usize) -> Result<Scheme, GaussogramError> {
-    dyadic_dual_real_with(n, WindowKind::Gaussian, false)
+    dyadic_dual_real_with(n, WindowKind::Gaussian, false, 1)
 }
 
+/// `dyadic_dual_real` with explicit options. `bands_per_octave` (power of two)
+/// subdivides **both** tiling A and the offset tiling-B dead-zone cover in
+/// lockstep, so the dual scheme stays ~2x redundant (output length `N - 1`) for
+/// every `bpo`.
 pub fn dyadic_dual_real_with(
     n: usize,
     kind: WindowKind,
     nyquist_flat_top: bool,
+    bands_per_octave: usize,
 ) -> Result<Scheme, GaussogramError> {
     check_pow2(n)?;
+    check_bpo(bands_per_octave)?;
     if n < 8 {
         return Err(GaussogramError::TooSmall {
             scheme: "dyadic_dual_real",
@@ -147,7 +195,7 @@ pub fn dyadic_dual_real_with(
             got: n,
         });
     }
-    let (mut bands, mut windows) = tiling_a(n, kind);
+    let (mut bands, mut windows) = tiling_a(n, kind, bands_per_octave);
 
     // Apply optional Nyquist flat-top to tiling A's top band.
     if nyquist_flat_top {
@@ -161,22 +209,22 @@ pub fn dyadic_dual_real_with(
         top.nyquist_flat_top = true;
     }
 
-    // Tiling B: for each interior octave join b in {2,4,...,N/4},
-    // band [b/2, 3b/2), width b, peak exactly on b.
+    // Tiling B: for each interior octave join b in {2,4,...,N/4}, the offset
+    // region [b/2, 3b/2) (width b, centred on the join) is subdivided into
+    // min(bands_per_octave, b) equal sub-bands, matching tiling A's density.
     let mut out_off: usize = bands.iter().map(Band::width).sum();
     let mut b = 2usize;
     while b <= n / 4 {
-        let lo = b / 2;
-        let hi = 3 * b / 2;
-        let width = b;
-        let w = make_window(kind, n, lo, width); // fcentre = lo + width/2 = b
-        windows.push(w);
-        bands.push(Band {
-            src_lo: lo,
-            src_hi: hi,
-            out_off,
-        });
-        out_off += width;
+        for (lo, hi) in split_pow2(b / 2, 3 * b / 2, bands_per_octave) {
+            let w = make_window(kind, n, lo, hi - lo);
+            windows.push(w);
+            bands.push(Band {
+                src_lo: lo,
+                src_hi: hi,
+                out_off,
+            });
+            out_off += hi - lo;
+        }
         b *= 2;
     }
 

@@ -1,8 +1,8 @@
 //! Scheme-invariant tests (§8) for the partitioning constructors.
 
 use gaussogram_core::{
-    complex_partitions, dyadic_complex, dyadic_dual_real, dyadic_real, legacy_real_partitions,
-    Band, GaussogramError,
+    complex_partitions, dyadic_complex, dyadic_dual_real, dyadic_dual_real_with, dyadic_real,
+    dyadic_real_with, legacy_real_partitions, Band, GaussogramError, WindowKind,
 };
 use proptest::prelude::*;
 
@@ -143,6 +143,100 @@ fn real_scheme_length_is_half_plus_one() {
         assert_eq!(s.output_len, n / 2 + 1, "N={n}");
         assert!(s.invertible);
     }
+}
+
+#[test]
+fn bpo1_matches_single_band_default() {
+    // bands_per_octave = 1 must reproduce the single-band-per-octave covers
+    // byte-for-byte (so existing output and golden parity are untouched).
+    for k in 2..=12 {
+        let n = 1usize << k;
+        let a = dyadic_real_with(n, WindowKind::Gaussian, 1).unwrap();
+        let b = dyadic_real(n).unwrap();
+        assert_eq!(a.bands, b.bands, "dyadic_real N={n}");
+    }
+    for k in 3..=12 {
+        let n = 1usize << k;
+        let a = dyadic_dual_real_with(n, WindowKind::Gaussian, false, 1).unwrap();
+        let b = dyadic_dual_real(n).unwrap();
+        assert_eq!(a.bands, b.bands, "dyadic_dual_real N={n}");
+    }
+}
+
+#[test]
+fn bpo_preserves_output_length() {
+    // Subdividing octaves conserves the coefficient count: real stays N/2+1 and
+    // dual stays N-1 for every power-of-two bands_per_octave.
+    for &bpo in &[1usize, 2, 4, 8] {
+        for k in 4..=13 {
+            let n = 1usize << k;
+            let r = dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap();
+            assert_eq!(r.output_len, n / 2 + 1, "real N={n} bpo={bpo}");
+            assert!(r.invertible);
+            let d = dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap();
+            assert_eq!(d.output_len, n - 1, "dual N={n} bpo={bpo}");
+        }
+    }
+}
+
+#[test]
+fn bpo_real_is_exact_partition() {
+    // Tiling A remains a contiguous gap-free, overlap-free cover of 0..=N/2.
+    for &bpo in &[1usize, 2, 4, 8, 16] {
+        for k in 4..=12 {
+            let n = 1usize << k;
+            let s = dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap();
+            assert_eq!(s.bands[0].src_lo, 0);
+            for w in s.bands.windows(2) {
+                assert_eq!(w[0].src_hi, w[1].src_lo, "N={n} bpo={bpo}");
+            }
+            assert_eq!(s.bands.last().unwrap().src_hi, n / 2 + 1);
+            // out_off is contiguous and packs 0..output_len exactly once.
+            let mut off = 0;
+            for b in &s.bands {
+                assert_eq!(b.out_off, off);
+                off += b.width();
+            }
+            assert_eq!(off, n / 2 + 1);
+        }
+    }
+}
+
+#[test]
+fn bpo_real_worked_example_n64() {
+    let s = dyadic_real_with(64, WindowKind::Gaussian, 2).unwrap();
+    let edges: Vec<(usize, usize)> = s.bands.iter().map(|b| (b.src_lo, b.src_hi)).collect();
+    assert_eq!(
+        edges,
+        vec![
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            (4, 6),
+            (6, 8),
+            (8, 12),
+            (12, 16),
+            (16, 24),
+            (24, 33), // top sub-band carries the Nyquist bin
+        ]
+    );
+}
+
+#[test]
+fn rejects_non_power_of_two_bpo() {
+    assert_eq!(
+        dyadic_real_with(256, WindowKind::Gaussian, 3).unwrap_err(),
+        GaussogramError::BandsPerOctave(3)
+    );
+    assert_eq!(
+        dyadic_real_with(256, WindowKind::Gaussian, 0).unwrap_err(),
+        GaussogramError::BandsPerOctave(0)
+    );
+    assert_eq!(
+        dyadic_dual_real_with(256, WindowKind::Gaussian, false, 6).unwrap_err(),
+        GaussogramError::BandsPerOctave(6)
+    );
 }
 
 #[test]

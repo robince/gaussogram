@@ -16,6 +16,11 @@ import numpy as np
 OUT = "reports/figures"
 os.makedirs(OUT, exist_ok=True)
 
+# The bands_per_octave report needs only gaussogram + matplotlib (no heavy deps)
+# and writes straight into reports/figures, so run it first and independently.
+print("== running compare_bands_per_octave.py ==")
+runpy.run_path("scripts/compare_bands_per_octave.py", run_name="__main__")
+
 # Regenerate the scratch figures (these scripts write into /tmp) and capture the
 # comparison module's namespace so we can recompute the summary tables.
 print("== running prototype_edge_schemes.py ==")

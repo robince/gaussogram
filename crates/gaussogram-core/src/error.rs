@@ -9,6 +9,7 @@ pub const STATUS_NOT_INVERTIBLE: i32 = 4;
 pub const STATUS_WRONG_INPUT_KIND: i32 = 5;
 pub const STATUS_OUTPUT_LEN_MISMATCH: i32 = 6;
 pub const STATUS_INPUT_LEN_MISMATCH: i32 = 7;
+pub const STATUS_BANDS_PER_OCTAVE: i32 = 8;
 pub const STATUS_INTERNAL: i32 = 99;
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -37,6 +38,9 @@ pub enum GaussogramError {
 
     #[error("input length {got} does not match scheme N {expected}")]
     InputLenMismatch { expected: usize, got: usize },
+
+    #[error("bands_per_octave must be a power of two >= 1 (got {0})")]
+    BandsPerOctave(usize),
 }
 
 impl GaussogramError {
@@ -49,6 +53,7 @@ impl GaussogramError {
             GaussogramError::WrongInputKind { .. } => STATUS_WRONG_INPUT_KIND,
             GaussogramError::OutputLenMismatch { .. } => STATUS_OUTPUT_LEN_MISMATCH,
             GaussogramError::InputLenMismatch { .. } => STATUS_INPUT_LEN_MISMATCH,
+            GaussogramError::BandsPerOctave(_) => STATUS_BANDS_PER_OCTAVE,
         }
     }
 }

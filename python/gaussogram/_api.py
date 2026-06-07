@@ -79,15 +79,25 @@ def gft1d_real(
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
     nyquist_flat_top: bool = False,
+    bands_per_octave: int = 1,
 ) -> NDArray[np.complex128]:
     """Forward GFT of a real signal.
 
     Default scheme `dyadic_dual_real` returns **N-1** complex coefficients
     (a deliberate breaking change from the legacy length-N contract). Pass
     ``scheme="dyadic_real"`` for the invertible length-``N/2+1`` baseline.
+
+    ``bands_per_octave`` (a power of two) subdivides each dyadic octave into that
+    many frequency sub-bands, trading time resolution for frequency resolution.
+    It does **not** change the output length — ``dyadic_real`` stays ``N/2+1`` and
+    ``dyadic_dual_real`` stays ``N-1`` for every value — it only reshapes the
+    tiling. Running a few values (e.g. 1, 2, 4) gives complementary
+    multiresolution views for far less data than a dense spectrogram.
     """
     x = _require_1d(x, np.float64, "x")
-    return _native.gft1d_real(x, scheme, window_type, nyquist_flat_top)
+    return _native.gft1d_real(
+        x, scheme, window_type, nyquist_flat_top, int(bands_per_octave)
+    )
 
 
 def gft1d(z, window_type: str = "gaussian") -> NDArray[np.complex128]:
@@ -97,10 +107,15 @@ def gft1d(z, window_type: str = "gaussian") -> NDArray[np.complex128]:
     return _native.gft1d(z, window_type)
 
 
-def inverse_real(coeffs, window_type: str = "gaussian") -> NDArray[np.float64]:
-    """Inverse of the invertible `dyadic_real` scheme (length-``N/2+1`` input)."""
+def inverse_real(
+    coeffs, window_type: str = "gaussian", bands_per_octave: int = 1
+) -> NDArray[np.float64]:
+    """Inverse of the invertible `dyadic_real` scheme (length-``N/2+1`` input).
+
+    ``bands_per_octave`` must match the value passed to the forward transform.
+    """
     coeffs = _require_1d(coeffs, np.complex128, "coeffs")
-    return _native.inverse_real(coeffs, window_type)
+    return _native.inverse_real(coeffs, window_type, int(bands_per_octave))
 
 
 def partitions(n: int) -> NDArray[np.int32]:
@@ -118,10 +133,11 @@ def scheme_bands(
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
     nyquist_flat_top: bool = False,
+    bands_per_octave: int = 1,
 ) -> BandLayout:
     """Band layout (src_lo, width, fcentre, out_off) for a scheme."""
     lo, width, fcentre, out_off = _native.scheme_bands(
-        int(n), scheme, window_type, nyquist_flat_top
+        int(n), scheme, window_type, nyquist_flat_top, int(bands_per_octave)
     )
     return BandLayout(lo, width, fcentre, out_off)
 
@@ -131,9 +147,14 @@ def output_len(
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
     nyquist_flat_top: bool = False,
+    bands_per_octave: int = 1,
 ) -> int:
-    """Packed output length for a scheme."""
-    return int(_native.output_len(int(n), scheme, window_type, nyquist_flat_top))
+    """Packed output length for a scheme (invariant to ``bands_per_octave``)."""
+    return int(
+        _native.output_len(
+            int(n), scheme, window_type, nyquist_flat_top, int(bands_per_octave)
+        )
+    )
 
 
 def _blur_axis(a: NDArray[np.float64], sigma: float, axis: int) -> NDArray[np.float64]:
@@ -204,6 +225,7 @@ def to_grid(
     interp_freq: str = "block",
     normalize: str = "none",
     smooth=None,
+    bands_per_octave: int = 1,
 ) -> NDArray[np.float64]:
     """Render packed GFT coefficients onto a ``(N/2+1, N)`` magnitude grid for
     display: frequency on the vertical axis, time on the horizontal.
@@ -257,7 +279,7 @@ def to_grid(
         softens whatever edges remain after ``interp``/``interp_freq``.
     """
     coeffs = np.ascontiguousarray(coeffs, dtype=np.complex128)
-    layout = scheme_bands(n, scheme, window_type, nyquist_flat_top)
+    layout = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
     nfreq = n // 2 + 1
 
     if interp not in ("linear", "nearest"):
@@ -284,7 +306,12 @@ def to_grid(
             mag = mag * np.sqrt(w)
         if w == 1:
             return np.full(n, mag[0])
-        band_times = np.linspace(0, n - 1, w)
+        # Each of the band's ``w`` samples represents a time *cell* of width n/w;
+        # anchor it at the cell CENTRE ``(j+0.5)·n/w`` (matching
+        # ``coefficient_geometry``), not at ``linspace(0, n-1, w)``. The endpoint
+        # convention pushed a narrow band's samples onto t=0 / t=n-1, biasing a
+        # centred impulse's energy toward the right edge in low-frequency bands.
+        band_times = (np.arange(w) + 0.5) * (n / w)
         if interp == "nearest":
             idx = np.abs(target_times[:, None] - band_times[None, :]).argmin(axis=1)
             return mag[idx]
@@ -364,7 +391,8 @@ class CoeffGeometry(NamedTuple):
     dt: NDArray[np.float64]     #: time extent (samples) = n / width
     df: NDArray[np.float64]     #: frequency extent (bins) = width
     logf: NDArray[np.float64]   #: log2(freq), DC floored to log2(0.5) = -1
-    level: NDArray[np.int64]    #: octave/scale index = round(log2(width))
+    level: NDArray[np.int64]    #: octave index = floor(log2(centre freq))
+    sub: NDArray[np.int64]      #: within-octave sub-band rank (0..bands_per_octave-1)
     tiling: NDArray[np.int64]   #: 0 = tiling A, 1 = tiling B (dual scheme)
     band: NDArray[np.int64]     #: index of the band each coefficient belongs to
 
@@ -374,12 +402,17 @@ def coefficient_geometry(
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
     nyquist_flat_top: bool = False,
+    bands_per_octave: int = 1,
 ) -> CoeffGeometry:
     """Geometry of every packed coefficient as points in the time-frequency
     plane (see :class:`CoeffGeometry`). Use as positional features for a
     transformer, or as the coordinate space for a continuous-kernel convolution.
+
+    With ``bands_per_octave > 1`` each octave holds several sub-bands; ``level``
+    is the octave index and ``sub`` is the rank within the octave, so the two
+    together locate a coefficient on the (log-frequency, sub-band) lattice.
     """
-    lay = scheme_bands(n, scheme, window_type, nyquist_flat_top)
+    lay = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
     a_len = n // 2 + 1
     total = int((lay.out_off + lay.width).max())
     time = np.zeros(total)
@@ -387,8 +420,23 @@ def coefficient_geometry(
     dt = np.zeros(total)
     df = np.zeros(total)
     level = np.zeros(total, dtype=np.int64)
+    sub = np.zeros(total, dtype=np.int64)
     tiling = np.zeros(total, dtype=np.int64)
     band = np.zeros(total, dtype=np.int64)
+
+    # Per-band octave index and tiling, then the within-octave rank: bands that
+    # share a (tiling, octave) are ranked low->high by their source frequency.
+    nb = len(lay.width)
+    b_octave = [int(np.floor(np.log2(max(int(fc), 1)))) for fc in lay.fcentre]
+    b_tiling = [0 if int(off) < a_len else 1 for off in lay.out_off]
+    b_sub = [0] * nb
+    groups: dict[tuple[int, int], list[int]] = {}
+    for bi in range(nb):
+        groups.setdefault((b_tiling[bi], b_octave[bi]), []).append(bi)
+    for members in groups.values():
+        for rank, bi in enumerate(sorted(members, key=lambda j: int(lay.src_lo[j]))):
+            b_sub[bi] = rank
+
     for bi, (w, fc, off) in enumerate(zip(lay.width, lay.fcentre, lay.out_off)):
         w, fc, off = int(w), int(fc), int(off)
         j = np.arange(w)
@@ -397,11 +445,12 @@ def coefficient_geometry(
         freq[idx] = fc
         dt[idx] = n / w
         df[idx] = w
-        level[idx] = int(round(np.log2(w)))
-        tiling[idx] = 0 if off < a_len else 1
+        level[idx] = b_octave[bi]
+        sub[idx] = b_sub[bi]
+        tiling[idx] = b_tiling[bi]
         band[idx] = bi
     logf = np.log2(np.maximum(freq, 0.5))
-    return CoeffGeometry(time, freq, dt, df, logf, level, tiling, band)
+    return CoeffGeometry(time, freq, dt, df, logf, level, sub, tiling, band)
 
 
 class CoeffAdjacency(NamedTuple):
@@ -429,6 +478,7 @@ def coefficient_adjacency(
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
     nyquist_flat_top: bool = False,
+    bands_per_octave: int = 1,
 ) -> CoeffAdjacency:
     """Neighbourhood graph over the packed coefficients (see
     :class:`CoeffAdjacency`). Three edge types:
@@ -439,7 +489,7 @@ def coefficient_adjacency(
     - ``dual`` — tiling-A ↔ tiling-B coefficients with overlapping support
       (the redundancy of the ``dyadic_dual_real`` scheme; empty otherwise).
     """
-    lay = scheme_bands(n, scheme, window_type, nyquist_flat_top)
+    lay = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
     a_len = n // 2 + 1
     bands = []
     for bi, (lo, w, fc, off) in enumerate(
