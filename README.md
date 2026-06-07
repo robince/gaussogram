@@ -142,3 +142,15 @@ data change, not new control flow.
 cargo test                                  # Rust core
 maturin develop --release && pytest python  # Python
 ```
+
+## License
+
+**GPL-3.0** (with additional terms). gaussogram is a derivative work — a Rust
+port — of [fst-uofc](https://github.com/robince/fst-uofc), which is GPL-3.0 with
+§7 additional terms (attribution, warranty/liability disclaimers, no-trademark,
+indemnification). Because the original is GPL-3.0, this port is too; the upstream
+copyright and additional terms are retained. See [`LICENSE`](LICENSE) for the GPL
+text and [`NOTICE`](NOTICE) for the attribution and additional terms.
+
+Upstream FST is © 2010 UTI Limited Partnership (original authors: R. A. Brown,
+M. L. Lauzon, R. Frayne). A non-free license is available separately from UTI.

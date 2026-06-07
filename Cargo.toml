@@ -1,10 +1,14 @@
 [workspace]
-members = ["crates/gaussogram-core", "crates/gaussogram-ffi", "crates/gaussogram-py"]
+members = [
+    "crates/gaussogram-core",
+    "crates/gaussogram-ffi",
+    "crates/gaussogram-py",
+]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 version = "0.1.0"
 
 [workspace.dependencies]
