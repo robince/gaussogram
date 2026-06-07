@@ -209,14 +209,23 @@ pub fn dyadic_dual_real_with(
         top.nyquist_flat_top = true;
     }
 
-    // Tiling B: for each interior octave join b in {2,4,...,N/4}, the offset
-    // region [b/2, 3b/2) (width b, centred on the join) is subdivided into
-    // min(bands_per_octave, b) equal sub-bands, matching tiling A's density.
+    // Tiling B: the dead-zone cover, offset by HALF A SUB-BAND from tiling A so
+    // each B band is centred on a tiling-A *join* (the weak point), never on an
+    // A sub-band. For octave [b, 2b) (b in {2,4,...,N/4}) with `k` sub-bands of
+    // width `s = b/k`, band m spans [b + m*s - s/2, b + m*s + s/2) — i.e. A's
+    // sub-band grid shifted down by s/2 — so its centre falls on join b + m*s.
+    // `k = min(bpo, b/2)` keeps the half-sub-band shift s/2 an integer (it needs
+    // 2k | b). At bpo=1 this is the single band [b/2, 3b/2) centred on join b.
     let mut out_off: usize = bands.iter().map(Band::width).sum();
     let mut b = 2usize;
     while b <= n / 4 {
-        for (lo, hi) in split_pow2(b / 2, 3 * b / 2, bands_per_octave) {
-            let w = make_window(kind, n, lo, hi - lo);
+        let k = bands_per_octave.min(b / 2).max(1);
+        let s = b / k;
+        for m in 0..k {
+            let centre = b + m * s;
+            let lo = centre - s / 2;
+            let hi = centre + s / 2;
+            let w = make_window(kind, n, lo, hi - lo); // fcentre = lo + s/2 = centre
             windows.push(w);
             bands.push(Band {
                 src_lo: lo,

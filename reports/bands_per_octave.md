@@ -38,10 +38,17 @@ count. Concretely, for `dyadic_dual_real` (N=512) the bands redistribute but the
 | `bpo` | n_bands | band @bin96: `df` (bins) | `dt` (samples) |
 |---:|---:|---:|---:|
 | 1 | 16 | 64 | 8 |
-| 2 | 30 | 32 | 16 |
-| 4 | 54 | 16 | 32 |
+| 2 | 29 | 32 | 16 |
+| 4 | 51 | 16 | 32 |
 
 Frequency extent halves and time extent doubles at each step, in lockstep.
+
+The dual scheme's tiling B (the dead-zone cover) is subdivided in lockstep with
+tiling A but kept **offset by half a sub-band**, so each B band centres on a
+tiling-A *join* (the weak point) rather than coinciding with an A sub-band. That
+offset is what lets a tone falling between two band centres be triangulated into a
+focused peak at every `bands_per_octave` (a naive subdivision that let B and A
+coincide would instead render such a tone as a flat block).
 
 ---
 

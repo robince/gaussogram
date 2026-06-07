@@ -224,6 +224,45 @@ fn bpo_real_worked_example_n64() {
 }
 
 #[test]
+fn dual_tiling_b_stays_offset_from_a() {
+    // The dead-zone cover must be offset by half a sub-band: no tiling-B band may
+    // coincide with a tiling-A band, and every B centre must sit on a tiling-A
+    // join (an A edge). Coincident bands would defeat the dead-zone fill and
+    // render as flat blocks instead of localising a join tone.
+    use std::collections::HashSet;
+    for &bpo in &[1usize, 2, 4, 8] {
+        for k in 5..=12 {
+            let n = 1usize << k;
+            let s = dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap();
+            let a_len = n / 2 + 1;
+            let mut a_bands: HashSet<(usize, usize)> = HashSet::new();
+            let mut a_edges: HashSet<usize> = HashSet::new();
+            let mut b_bands: Vec<(usize, usize)> = Vec::new();
+            for band in &s.bands {
+                if band.out_off < a_len {
+                    a_bands.insert((band.src_lo, band.src_hi));
+                    a_edges.insert(band.src_lo);
+                    a_edges.insert(band.src_hi);
+                } else {
+                    b_bands.push((band.src_lo, band.src_hi));
+                }
+            }
+            for &(lo, hi) in &b_bands {
+                assert!(
+                    !a_bands.contains(&(lo, hi)),
+                    "N={n} bpo={bpo}: B band [{lo},{hi}) coincides with an A band"
+                );
+                let centre = lo + (hi - lo) / 2;
+                assert!(
+                    a_edges.contains(&centre),
+                    "N={n} bpo={bpo}: B band [{lo},{hi}) centre {centre} is not on an A join"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn rejects_non_power_of_two_bpo() {
     assert_eq!(
         dyadic_real_with(256, WindowKind::Gaussian, 3).unwrap_err(),
