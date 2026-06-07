@@ -30,6 +30,10 @@ __all__ = [
     "BandLayout",
     "Gaussogram1d",
     "to_grid",
+    "coefficient_geometry",
+    "coefficient_adjacency",
+    "CoeffGeometry",
+    "CoeffAdjacency",
 ]
 
 
@@ -336,3 +340,158 @@ def to_grid(
     if smooth is not None:
         grid = _gaussian_blur(grid, smooth)
     return grid
+
+
+# ---- coefficient geometry & adjacency (for downstream models) -------------
+#
+# These describe *where each coefficient lives* in the time-frequency plane and
+# *how coefficients relate*, so a model can operate natively on the packed ~N
+# vector (transformer positional features / continuous convolutions / GNNs /
+# graph-Laplacian smoothness / structured-sparsity groups) WITHOUT densifying it
+# to an N x N/2 grid. Both are signal-INDEPENDENT — they depend only on
+# (n, scheme, window_type, nyquist_flat_top) — so compute once and reuse. This is
+# the complement of `to_grid`, which resamples values for display; here the
+# values are untouched and only the basis geometry is exposed.
+
+
+class CoeffGeometry(NamedTuple):
+    """Per-coefficient time-frequency geometry (parallel arrays, length =
+    output_len). Each coefficient owns a tile of size ``dt`` (time) x ``df``
+    (frequency); ``dt * df == n`` for every tile."""
+
+    time: NDArray[np.float64]   #: tile centre time (samples), in [0, n)
+    freq: NDArray[np.float64]   #: tile centre frequency (bins)
+    dt: NDArray[np.float64]     #: time extent (samples) = n / width
+    df: NDArray[np.float64]     #: frequency extent (bins) = width
+    logf: NDArray[np.float64]   #: log2(freq), DC floored to log2(0.5) = -1
+    level: NDArray[np.int64]    #: octave/scale index = round(log2(width))
+    tiling: NDArray[np.int64]   #: 0 = tiling A, 1 = tiling B (dual scheme)
+    band: NDArray[np.int64]     #: index of the band each coefficient belongs to
+
+
+def coefficient_geometry(
+    n: int,
+    scheme: str = "dyadic_dual_real",
+    window_type: str = "gaussian",
+    nyquist_flat_top: bool = False,
+) -> CoeffGeometry:
+    """Geometry of every packed coefficient as points in the time-frequency
+    plane (see :class:`CoeffGeometry`). Use as positional features for a
+    transformer, or as the coordinate space for a continuous-kernel convolution.
+    """
+    lay = scheme_bands(n, scheme, window_type, nyquist_flat_top)
+    a_len = n // 2 + 1
+    total = int((lay.out_off + lay.width).max())
+    time = np.zeros(total)
+    freq = np.zeros(total)
+    dt = np.zeros(total)
+    df = np.zeros(total)
+    level = np.zeros(total, dtype=np.int64)
+    tiling = np.zeros(total, dtype=np.int64)
+    band = np.zeros(total, dtype=np.int64)
+    for bi, (w, fc, off) in enumerate(zip(lay.width, lay.fcentre, lay.out_off)):
+        w, fc, off = int(w), int(fc), int(off)
+        j = np.arange(w)
+        idx = off + j
+        time[idx] = (j + 0.5) * (n / w)
+        freq[idx] = fc
+        dt[idx] = n / w
+        df[idx] = w
+        level[idx] = int(round(np.log2(w)))
+        tiling[idx] = 0 if off < a_len else 1
+        band[idx] = bi
+    logf = np.log2(np.maximum(freq, 0.5))
+    return CoeffGeometry(time, freq, dt, df, logf, level, tiling, band)
+
+
+class CoeffAdjacency(NamedTuple):
+    """Sparse neighbourhood graph over the packed coefficients (undirected;
+    each edge stored once with ``i < j``). Symmetrise for message passing; the
+    unweighted graph Laplacian encodes a smoothness prior over the irregular
+    tiling, and ``edge_type`` lets you weight relations differently."""
+
+    edge_index: NDArray[np.int64]    #: (2, E) endpoint indices, i < j
+    edge_type: NDArray[np.int64]     #: 0 = time, 1 = band, 2 = dual (see type_names)
+    edge_weight: NDArray[np.float64] #: (E,) structural weights (1.0 by default)
+    type_names: tuple = ("time", "band", "dual")
+
+
+def _connect_by_time(b1: dict, b2: dict):
+    """Map each coefficient of the finer-time band to the time cell of the
+    coarser-time band it falls in (≈ time-aligned cross-band edges)."""
+    fine, coarse = (b1, b2) if b1["w"] >= b2["w"] else (b2, b1)
+    jc = np.clip((fine["tcent"] / coarse["dt"]).astype(np.int64), 0, coarse["w"] - 1)
+    return coarse["gidx"][jc], fine["gidx"]
+
+
+def coefficient_adjacency(
+    n: int,
+    scheme: str = "dyadic_dual_real",
+    window_type: str = "gaussian",
+    nyquist_flat_top: bool = False,
+) -> CoeffAdjacency:
+    """Neighbourhood graph over the packed coefficients (see
+    :class:`CoeffAdjacency`). Three edge types:
+
+    - ``time`` — consecutive coefficients within a band (intra-band time axis);
+    - ``band`` — frequency-adjacent bands within a tiling, time-aligned
+      (the cross-octave / cross-band "scale" relation);
+    - ``dual`` — tiling-A ↔ tiling-B coefficients with overlapping support
+      (the redundancy of the ``dyadic_dual_real`` scheme; empty otherwise).
+    """
+    lay = scheme_bands(n, scheme, window_type, nyquist_flat_top)
+    a_len = n // 2 + 1
+    bands = []
+    for bi, (lo, w, fc, off) in enumerate(
+        zip(lay.src_lo, lay.width, lay.fcentre, lay.out_off)
+    ):
+        lo, w, fc, off = int(lo), int(w), int(fc), int(off)
+        bands.append(
+            dict(bi=bi, lo=lo, hi=lo + w, w=w, fc=fc, off=off,
+                 gidx=off + np.arange(w),
+                 tcent=(np.arange(w) + 0.5) * (n / w),
+                 dt=n / w,
+                 tiling=0 if off < a_len else 1)
+        )
+
+    src, dst, typ = [], [], []
+
+    def add(s, d, t):
+        s, d = np.atleast_1d(s), np.atleast_1d(d)
+        src.append(s)
+        dst.append(d)
+        typ.append(np.full(len(d), t, dtype=np.int64))
+
+    # time: consecutive coefficients inside each band
+    for b in bands:
+        if b["w"] >= 2:
+            add(b["gidx"][:-1], b["gidx"][1:], 0)
+    # band: frequency-adjacent bands within each tiling, time-aligned
+    for tl in (0, 1):
+        tb = sorted((b for b in bands if b["tiling"] == tl), key=lambda b: b["fc"])
+        for a, c in zip(tb[:-1], tb[1:]):
+            add(*_connect_by_time(a, c), 1)
+    # dual: tiling A <-> tiling B with overlapping frequency support
+    a_bands = [b for b in bands if b["tiling"] == 0]
+    b_bands = [b for b in bands if b["tiling"] == 1]
+    for a in a_bands:
+        for bb in b_bands:
+            if a["lo"] < bb["hi"] and bb["lo"] < a["hi"]:
+                add(*_connect_by_time(a, bb), 2)
+
+    if not src:
+        return CoeffAdjacency(np.zeros((2, 0), np.int64), np.zeros(0, np.int64), np.zeros(0))
+
+    s = np.concatenate(src)
+    d = np.concatenate(dst)
+    t = np.concatenate(typ)
+    lo_i = np.minimum(s, d)
+    hi_i = np.maximum(s, d)
+    keep = lo_i != hi_i  # drop any self-loops
+    lo_i, hi_i, t = lo_i[keep], hi_i[keep], t[keep]
+    # de-duplicate identical (i, j, type) triples
+    key = np.stack([lo_i, hi_i, t], axis=1)
+    _, uniq = np.unique(key, axis=0, return_index=True)
+    uniq = np.sort(uniq)
+    edge_index = np.stack([lo_i[uniq], hi_i[uniq]]).astype(np.int64)
+    return CoeffAdjacency(edge_index, t[uniq].astype(np.int64), np.ones(len(uniq)))

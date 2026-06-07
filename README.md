@@ -82,6 +82,13 @@ c = h.forward(x); xr = h.inverse(c)
   - `interp_freq` — frequency-axis placement (`"block"`, `"linear"`, `"gauss"`).
   - `normalize` — per-band brightness (`"none"`, `"width"` L1, `"energy"` L2).
   - `smooth` — optional Gaussian blur of the assembled grid.
+- `coefficient_geometry(n, …)` / `coefficient_adjacency(n, …)` — **basis
+  geometry for downstream models** (signal-independent). The first gives each
+  coefficient's time-frequency tile (`time`, `freq`, `dt`, `df`, `level`,
+  `tiling`, …) as positional features; the second gives a sparse neighbourhood
+  graph (`time` / `band` / `dual` edges) for GNNs, graph-Laplacian smoothness, or
+  structured-sparsity groups — letting a model use the packed ~N vector natively
+  without densifying it to a grid.
 
 Inputs are validated strictly (1-D, C-contiguous, exact dtype) — no silent
 copies/casts.
@@ -132,6 +139,9 @@ data change, not new control flow.
   tones/chirps/impulses, interpolation and tiling illustrations, and
   `compare_existing.py`, which situates the transform against `pywt`, `dtcwt`,
   `nsgt`, and `ssqueezepy` (CWT / synchrosqueezing / STFT).
+- `reports/` — a short write-up of the Python investigations (dead-zone fixes
+  and a comparison against `pywt` / `dtcwt` / `nsgt` / `ssqueezepy`) with figures;
+  regenerate via `python scripts/make_report.py`.
 - `golden/` — golden vectors (generated from the reference) for parity tests.
 - `extern/fst-uofc` — the reference library (a local checkout / symlink).
 - `RUST_PORT_SPEC.md` — the porting specification.

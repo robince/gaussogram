@@ -3,7 +3,11 @@
 
 from ._api import (
     BandLayout,
+    CoeffAdjacency,
+    CoeffGeometry,
     Gaussogram1d,
+    coefficient_adjacency,
+    coefficient_geometry,
     gft1d,
     gft1d_real,
     inverse_real,
@@ -16,7 +20,11 @@ from ._api import (
 
 __all__ = [
     "BandLayout",
+    "CoeffAdjacency",
+    "CoeffGeometry",
     "Gaussogram1d",
+    "coefficient_adjacency",
+    "coefficient_geometry",
     "gft1d",
     "gft1d_real",
     "inverse_real",

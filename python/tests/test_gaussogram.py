@@ -314,3 +314,45 @@ def test_handle_rejects_wrong_length():
     h = g.Gaussogram1d(64)
     with pytest.raises(ValueError):
         h.forward(np.ascontiguousarray(np.zeros(32)))
+
+
+# ---- coefficient geometry & adjacency (downstream-model metadata) ---------
+
+
+def test_coefficient_geometry_matches_packing():
+    n = 128
+    geo = g.coefficient_geometry(n)  # dyadic_dual_real
+    assert len(geo.time) == g.output_len(n)
+    # every tile has area n (dt = n/width, df = width)
+    np.testing.assert_allclose(geo.dt * geo.df, n)
+    # centre times lie inside the record; the dual scheme has both tilings
+    assert geo.time.min() >= 0 and geo.time.max() < n
+    assert set(geo.tiling.tolist()) == {0, 1}
+    # per-coefficient freq equals the owning band's centre frequency
+    lay = g.scheme_bands(n)
+    for lo, w, fc, off in zip(lay.src_lo, lay.width, lay.fcentre, lay.out_off):
+        off, w, fc = int(off), int(w), int(fc)
+        assert np.all(geo.freq[off : off + w] == fc)
+
+
+def test_coefficient_adjacency_is_valid_graph():
+    n = 128
+    total = g.output_len(n)
+    adj = g.coefficient_adjacency(n)
+    ei, et = adj.edge_index, adj.edge_type
+    assert ei.shape[0] == 2 and ei.shape[1] == et.shape[0]
+    # valid, undirected (i < j), no self-loops
+    assert ei.min() >= 0 and ei.max() < total
+    assert np.all(ei[0] < ei[1])
+    # edge types are a subset of the three named relations
+    assert set(et.tolist()).issubset({0, 1, 2})
+    # time edges = consecutive coefficients within every band of width >= 2
+    expected_time = sum(max(int(w) - 1, 0) for w in g.scheme_bands(n).width if int(w) >= 2)
+    assert int((et == 0).sum()) == expected_time
+    # the dual scheme has A<->B (type 2) edges
+    assert int((et == 2).sum()) > 0
+
+
+def test_coefficient_adjacency_single_tiling_has_no_dual_edges():
+    adj = g.coefficient_adjacency(128, scheme="dyadic_real")
+    assert int((adj.edge_type == 2).sum()) == 0  # no tiling B, so no dual edges
