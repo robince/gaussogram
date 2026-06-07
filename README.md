@@ -118,7 +118,9 @@ c = h.forward(x); xr = h.inverse(c)
   second gives a sparse neighbourhood
   graph (`time` / `band` / `dual` edges) for GNNs, graph-Laplacian smoothness, or
   structured-sparsity groups — letting a model use the packed ~N vector natively
-  without densifying it to a grid.
+  without densifying it to a grid. `to_sparse_adjacency(adj, n, …)` converts that
+  graph to a sparse matrix for cluster-based statistics (MNE/FieldTrip
+  permutation clustering, TFCE) or `scipy` connected components.
 
 Inputs are validated strictly (1-D, C-contiguous, exact dtype) — no silent
 copies/casts.

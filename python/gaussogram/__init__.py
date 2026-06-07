@@ -16,6 +16,7 @@ from ._api import (
     real_partitions,
     scheme_bands,
     to_grid,
+    to_sparse_adjacency,
 )
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "CoeffGeometry",
     "Gaussogram1d",
     "coefficient_adjacency",
+    "to_sparse_adjacency",
     "coefficient_geometry",
     "gft1d",
     "gft1d_real",

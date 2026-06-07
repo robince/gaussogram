@@ -358,6 +358,27 @@ def test_coefficient_adjacency_single_tiling_has_no_dual_edges():
     assert int((adj.edge_type == 2).sum()) == 0  # no tiling B, so no dual edges
 
 
+def test_to_sparse_adjacency_builds_valid_matrix():
+    sp = pytest.importorskip("scipy.sparse")
+    from scipy.sparse.csgraph import connected_components
+
+    n = 128
+    total = g.output_len(n)
+    adj = g.coefficient_adjacency(n)
+    A = g.to_sparse_adjacency(adj, total)  # default time+band, symmetric
+    assert A.shape == (total, total)
+    assert (A != A.T).nnz == 0  # symmetric
+    # nnz = 2 x number of selected undirected edges
+    n_tb = int(np.isin(adj.edge_type, [0, 1]).sum())
+    assert A.nnz == 2 * n_tb
+    # excluding 'dual' leaves tiling A and B as separate components;
+    # adding 'dual' edges connects them.
+    nc_tb = connected_components(A, directed=False)[0]
+    A_all = g.to_sparse_adjacency(adj, total, types=("time", "band", "dual"))
+    nc_all = connected_components(A_all, directed=False)[0]
+    assert nc_all < nc_tb
+
+
 # ---- bands_per_octave (sub-octave subdivision) ----------------------------
 
 

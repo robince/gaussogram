@@ -32,6 +32,7 @@ __all__ = [
     "to_grid",
     "coefficient_geometry",
     "coefficient_adjacency",
+    "to_sparse_adjacency",
     "CoeffGeometry",
     "CoeffAdjacency",
 ]
@@ -545,3 +546,58 @@ def coefficient_adjacency(
     uniq = np.sort(uniq)
     edge_index = np.stack([lo_i[uniq], hi_i[uniq]]).astype(np.int64)
     return CoeffAdjacency(edge_index, t[uniq].astype(np.int64), np.ones(len(uniq)))
+
+
+def to_sparse_adjacency(
+    adj: "CoeffAdjacency",
+    n_nodes: int,
+    types=("time", "band"),
+    symmetric: bool = True,
+    weighted: bool = False,
+    fmt: str = "csr",
+):
+    """Build a sparse ``(n_nodes, n_nodes)`` adjacency matrix from a
+    :class:`CoeffAdjacency`, for cluster-based statistics (MNE / FieldTrip
+    permutation clustering and TFCE, or ``scipy.sparse.csgraph`` connected
+    components).
+
+    Parameters
+    ----------
+    n_nodes:
+        Number of coefficients (= ``output_len``). Pass it explicitly; the edge
+        list alone can under-count nodes if the last coefficients are isolated.
+    types:
+        Which edge relations to include, by name or id. Default ``("time",
+        "band")`` — the genuine time-frequency neighbourhood. ``"dual"`` (the
+        tiling-A↔B redundancy edges) is excluded by default: those link
+        *redundant copies* of the same location, which would merge them in a
+        cluster. Pass ``types=("time", "band", "dual")`` to include them.
+    symmetric:
+        If True (default), add both directions so the matrix is symmetric.
+    weighted:
+        If True, use ``adj.edge_weight``; otherwise binary (1.0) connectivity.
+
+    Notes
+    -----
+    Caveat for multiresolution clustering: a low-frequency coefficient spans the
+    whole time axis (``dt = n/width``), so ``band`` edges can bridge temporally
+    distant activity through coarse tiles and inflate clusters. To avoid that,
+    restrict ``types=("time",)``, or weight/prune edges using
+    :func:`coefficient_geometry` before building the matrix.
+    """
+    try:
+        import scipy.sparse as sp
+    except ImportError as e:  # pragma: no cover
+        raise ImportError("to_sparse_adjacency requires scipy (pip install scipy)") from e
+
+    name_to_id = {name: i for i, name in enumerate(adj.type_names)}
+    sel = {name_to_id[t] if isinstance(t, str) else int(t) for t in types}
+    mask = np.isin(adj.edge_type, list(sel))
+    ei = adj.edge_index[:, mask]
+    w = adj.edge_weight[mask].astype(np.float64) if weighted else np.ones(int(mask.sum()))
+    rows, cols = ei[0], ei[1]
+    if symmetric:
+        rows, cols = np.concatenate([rows, cols]), np.concatenate([cols, rows])
+        w = np.concatenate([w, w])
+    mat = sp.coo_matrix((w, (rows, cols)), shape=(n_nodes, n_nodes))
+    return mat.asformat(fmt)
