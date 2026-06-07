@@ -131,12 +131,68 @@ def test_to_grid_interp_freq_modes():
     block = g.to_grid(coeffs, n, interp="linear", interp_freq="block")
     linf = g.to_grid(coeffs, n, interp="linear", interp_freq="linear")
     linf_sm = g.to_grid(coeffs, n, interp="linear", interp_freq="linear", smooth=(2.0, 4.0))
-    for grid in (block, linf, linf_sm):
+    gauss = g.to_grid(coeffs, n, interp="linear", interp_freq="gauss")
+    for grid in (block, linf, linf_sm, gauss):
         assert grid.shape == (n // 2 + 1, n)
         assert np.all(np.isfinite(grid))
     # Frequency interpolation must change the result vs block fill.
     assert not np.array_equal(block, linf)
     assert not np.array_equal(linf, linf_sm)
+    assert not np.array_equal(block, gauss)
+    assert not np.array_equal(linf, gauss)
+
+
+def test_to_grid_rejects_unknown_normalize():
+    n = 64
+    with pytest.raises(ValueError, match="normalize"):
+        g.to_grid(g.gft1d_real(np.ones(n)), n, normalize="zscore")
+
+
+def test_to_grid_width_normalize_equalises_brightness_across_octaves():
+    # |coeff| ∝ 1/width, so without normalisation an equal-amplitude tone is
+    # dimmer in higher (wider) bands. normalize="width" should flatten that.
+    n = 512
+    t = np.arange(n)
+    centres = (24, 48, 96, 192)  # successive octave-band centres
+    peaks_none, peaks_width = [], []
+    for f in centres:
+        c = g.gft1d_real(np.ascontiguousarray(np.cos(2 * np.pi * f * t / n)),
+                         nyquist_flat_top=True)
+        kw = dict(nyquist_flat_top=True, interp_freq="gauss")
+        peaks_none.append(g.to_grid(c, n, normalize="none", **kw).max())
+        peaks_width.append(g.to_grid(c, n, normalize="width", **kw).max())
+    peaks_none = np.array(peaks_none)
+    peaks_width = np.array(peaks_width)
+    # raw peaks fall steeply across octaves; width-normalised peaks are ~flat.
+    assert peaks_none[0] > 3 * peaks_none[-1]
+    assert peaks_width.max() / peaks_width.min() < 1.3
+
+
+def test_to_grid_gauss_confines_join_tone_to_effective_bandwidth():
+    # A tone exactly on an octave join is captured by a B band centred there.
+    # `block` smears it across the band's full ±3σ support; `gauss` confines it
+    # to the effective bandwidth and peaks at the true frequency.
+    n = 512
+    join = 64
+    x = np.ascontiguousarray(np.cos(2 * np.pi * join * np.arange(n) / n))
+    coeffs = g.gft1d_real(x, scheme="dyadic_dual_real", nyquist_flat_top=True)
+    kw = dict(scheme="dyadic_dual_real", nyquist_flat_top=True)
+    block = g.to_grid(coeffs, n, interp_freq="block", **kw)
+    gauss = g.to_grid(coeffs, n, interp_freq="gauss", **kw)
+
+    col_b = block[:, n // 2]
+    col_g = gauss[:, n // 2]
+
+    def half_max_span(col):
+        rows = np.flatnonzero(col > 0.5 * col.max())
+        return int(rows.min()), int(rows.max())
+
+    lo_b, hi_b = half_max_span(col_b)
+    lo_g, hi_g = half_max_span(col_g)
+    # gauss peaks at the true frequency; block does not (it fills the support).
+    assert abs(int(col_g.argmax()) - join) <= 2
+    # gauss is markedly narrower in frequency than the full-support block fill.
+    assert (hi_g - lo_g) < 0.5 * (hi_b - lo_b)
 
 
 def test_to_grid_rejects_unknown_interp_freq():

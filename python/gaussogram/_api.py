@@ -198,6 +198,7 @@ def to_grid(
     nyquist_flat_top: bool = False,
     interp: str = "linear",
     interp_freq: str = "block",
+    normalize: str = "none",
     smooth=None,
 ) -> NDArray[np.float64]:
     """Render packed GFT coefficients onto a ``(N/2+1, N)`` magnitude grid for
@@ -223,6 +224,28 @@ def to_grid(
         and linearly interpolates between adjacent band centres, giving a smooth
         frequency axis with no block seams. With ``dyadic_dual_real`` the offset
         B bands add extra centre nodes, so the interpolation is finer.
+        ``"gauss"`` weights each band's row by its **actual Gaussian window**
+        across frequency (peak at ``fcentre``, ``σ_f = fcentre / 2π``) and
+        normalises across overlapping bands (partition of unity). Unlike
+        ``"block"`` (which smears a band over its full ``±3σ`` storage support ≈
+        1.58 octaves) and ``"linear"`` (which spreads it linearly to the
+        neighbouring centres), ``"gauss"`` confines each band to its true
+        effective bandwidth (FWHM ≈ 1/3 octave), so a tone renders as a compact
+        blob at its frequency. Best matches the transform's real resolution for
+        the overlapping dual scheme.
+    normalize:
+        Per-band brightness normalisation. A spectral line of fixed amplitude
+        produces coefficients of magnitude ``∝ 1/width``, so wider (higher-
+        frequency) bands render dimmer for the same energy — the contrast drifts
+        across the frequency axis. ``"none"`` (default) shows raw ``|coeff|``;
+        ``"width"`` multiplies each band's row by its width (L1): an equal-
+        amplitude **tone** is equally bright in every band, but a flat-spectrum
+        event (impulse / white noise) then tilts *up* ∝ width toward high
+        frequency. ``"energy"`` multiplies by √width (L2): the energy-preserving
+        compromise — neither tones nor broadband are perfectly flat, both tilt
+        gently. There is no single choice flat for both, because a tone scales
+        as 1/width and a flat spectrum as a constant (the classic L1-vs-L2
+        wavelet/CQT normalisation trade).
     smooth:
         Optional Gaussian blur applied to the assembled grid, in grid cells.
         A scalar blurs both axes equally; a ``(sigma_freq, sigma_time)`` pair
@@ -235,9 +258,13 @@ def to_grid(
 
     if interp not in ("linear", "nearest"):
         raise ValueError(f"interp must be 'linear' or 'nearest', got {interp!r}")
-    if interp_freq not in ("linear", "block"):
+    if interp_freq not in ("linear", "block", "gauss"):
         raise ValueError(
-            f"interp_freq must be 'linear' or 'block', got {interp_freq!r}"
+            f"interp_freq must be 'linear', 'block', or 'gauss', got {interp_freq!r}"
+        )
+    if normalize not in ("none", "width", "energy"):
+        raise ValueError(
+            f"normalize must be 'none', 'width', or 'energy', got {normalize!r}"
         )
 
     target_times = np.arange(n)
@@ -245,6 +272,12 @@ def to_grid(
     def band_row(off: int, w: int) -> NDArray[np.float64]:
         """Time-resample one band's magnitude to all ``N`` columns."""
         mag = np.abs(coeffs[off : off + w])
+        # |coeff| ∝ 1/width for a fixed-amplitude line; ×width (L1) equalises tone
+        # brightness across bands, ×√width (L2) is the energy-preserving middle.
+        if normalize == "width":
+            mag = mag * w
+        elif normalize == "energy":
+            mag = mag * np.sqrt(w)
         if w == 1:
             return np.full(n, mag[0])
         band_times = np.linspace(0, n - 1, w)
@@ -262,7 +295,7 @@ def to_grid(
             row = band_row(off, w)
             hi = min(lo + w, nfreq)
             grid[lo:hi, :] = np.maximum(grid[lo:hi, :], row[None, :])
-    else:  # linear in frequency: anchor each band at its centre, interpolate
+    elif interp_freq == "linear":  # anchor each band at its centre, interpolate
         nodes: dict[int, NDArray[np.float64]] = {}
         for w, off, fc in zip(layout.width, layout.out_off, layout.fcentre):
             w, off, fc = int(w), int(off), int(fc)
@@ -274,6 +307,31 @@ def to_grid(
         node_freqs = np.array(sorted(nodes), dtype=np.float64)
         node_profiles = np.stack([nodes[int(f)] for f in node_freqs])
         grid = _interp_freq_grid(node_freqs, node_profiles, nfreq)
+    else:  # "gauss": weight each band by its window profile, normalise overlaps
+        grid = np.zeros((nfreq, n), dtype=np.float64)
+        weight_sum = np.zeros(nfreq, dtype=np.float64)
+        for lo, w, off, fc in zip(
+            layout.src_lo, layout.width, layout.out_off, layout.fcentre
+        ):
+            lo, w, off, fc = int(lo), int(w), int(off), int(fc)
+            if lo >= nfreq:
+                continue
+            row = band_row(off, w)
+            hi = min(lo + w, nfreq)
+            rows = np.arange(lo, hi)
+            if w == 1 or fc == 0:
+                # DC / width-1 bands carry no taper: flat over their support.
+                wj = np.ones(hi - lo, dtype=np.float64)
+            else:
+                sigma = fc / (2.0 * np.pi)  # freq-domain σ of the band Gaussian
+                wj = np.exp(-((rows - fc) ** 2) / (2.0 * sigma**2))
+                # Mirror the forward transform's Nyquist flat-top on the top band.
+                if nyquist_flat_top and lo + w >= nfreq:
+                    wj[rows >= fc] = 1.0
+            grid[lo:hi, :] += wj[:, None] * row[None, :]
+            weight_sum[lo:hi] += wj
+        weight_sum = np.where(weight_sum > 0.0, weight_sum, 1.0)
+        grid /= weight_sum[:, None]
 
     if smooth is not None:
         grid = _gaussian_blur(grid, smooth)

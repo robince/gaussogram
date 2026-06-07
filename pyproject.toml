@@ -19,9 +19,18 @@ manifest-path = "crates/gaussogram-py/Cargo.toml"
 python-source = "python"
 module-name = "gaussogram._native"
 
+[tool.uv.extra-build-dependencies]
+# nsgt (v0.19) doesn't declare its build deps; supply them so uv can build it.
+nsgt = ["numpy", "setuptools", "cython"]
+
 [dependency-groups]
 dev = [
+    "dtcwt>=0.13.0",
     "ipykernel>=7.2.0",
     "ipympl>=0.10.0",
     "ipywidgets>=8.1.8",
+    "nsgt>=0.19",
+    "pywavelets>=1.8.0",
+    "scipy>=1.15.3",
+    "ssqueezepy>=0.6.6",
 ]

@@ -120,13 +120,20 @@ plt.show()
 # %% [markdown]
 # ## 2. `dyadic_dual_real` — A tiles (blue) with offset B tiles (orange) on top
 #
-# The B bands are centred on tiling A's octave *joins* (the horizontal seams in
-# panel 1). Each B tile straddles a seam, so wherever a tone would fall into A's
-# Gaussian "dead zone" at a join, a B tile covers it. The two tilings overlap;
-# in the rendered image `to_grid` keeps whichever magnitude is larger per cell.
+# The B bands are centred on tiling A's octave *joins* (the horizontal dotted
+# lines). Each B band is built (see `scheme.rs`) as `[b/2, 3b/2)` — **linearly
+# symmetric** about a join `b`, with its Gaussian peak exactly on `b`.
 #
-# Drawn separately and offset slightly so you can see the overlap region rather
-# than coincident lines.
+# **Why the orange bands overlap each other** (this looks wrong but is correct):
+# the B joins `2,4,8,16` are spaced one octave apart, but each B band spans
+# `[b/2, 3b/2)` = a ratio of 3:1 ≈ 1.58 octaves — *wider* than the spacing — so
+# consecutive B bands necessarily overlap, by `b/2` bins. Unlike tiling A (a
+# critically-sampled partition: each frequency covered exactly once), tiling B is
+# a deliberately **redundant overlay** — that oversampling is what rescues
+# dead-zone tones. The rectangles show each band's *support*; the Gaussian inside
+# tapers from the centre (dotted line) into the edges, so the overlaps are window
+# *tails*, not equal-weight double counting. In the rendered image `to_grid`
+# keeps whichever magnitude is larger per cell (`np.maximum`).
 
 # %%
 layout_dual = g.scheme_bands(N, scheme="dyadic_dual_real", nyquist_flat_top=True)
@@ -147,6 +154,12 @@ draw_tiles(ax, layout_A, color="tab:blue", label="tiling A (primary)",
            face_alpha=0.12)
 draw_tiles(ax, layout_B, color="tab:orange", label="tiling B (offset)",
            face_alpha=0.12, inset=(0.0, 0.35))
+# Mark each B band's centre/peak frequency (the A-joins): the Gaussian peaks
+# here and tapers into the overlapping support drawn around it.
+for fc in layout_B.fcentre:
+    ax.axhline(int(fc), color="tab:orange", ls=":", lw=1.0, alpha=0.8)
+ax.axhline(int(layout_B.fcentre[0]), color="tab:orange", ls=":", lw=1.0,
+           alpha=0.8, label="B peak (octave join)")
 ax.set_xlim(0, N)
 ax.set_ylim(0, NFREQ)
 ax.set_xlabel("time (samples)")
@@ -171,7 +184,7 @@ t = np.arange(N)
 sig = np.ascontiguousarray(np.cos(2 * np.pi * JOIN * t / N))
 coeffs = g.gft1d_real(sig, scheme="dyadic_dual_real", nyquist_flat_top=True)
 grid = g.to_grid(coeffs, N, scheme="dyadic_dual_real",
-                 nyquist_flat_top=True, interp="linear")
+                 nyquist_flat_top=True, interp="linear", normalize="width")
 
 fig, (axL, axR) = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
 

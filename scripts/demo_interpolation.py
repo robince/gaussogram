@@ -14,8 +14,12 @@
 # 3. `interp="linear",  interp_freq="linear"` — also interpolate across
 #    frequency: each band is anchored at its centre and linearly blended with
 #    its neighbours, removing the horizontal block seams
-# 4. `interp="linear",  interp_freq="linear", smooth=(sf, st)` — plus a separable
-#    Gaussian blur in **both** directions for a fully smooth render
+# 4. `interp="linear",  interp_freq="gauss"` — weight each band by its **actual
+#    Gaussian window** (σ_f = fcentre/2π) and normalise overlaps. `"block"`
+#    smears a band over its full ±3σ storage support (≈1.58 octaves for the dual
+#    scheme's B bands); `"gauss"` instead confines it to its true effective
+#    bandwidth (FWHM ≈ 1/3 octave), so a tone renders as a compact blob at its
+#    frequency rather than a tall block — the honest frequency resolution.
 #
 # Build the extension first: `maturin develop --release`
 
@@ -54,8 +58,7 @@ MODES = [
     ("nearest time / block freq", dict(interp="nearest", interp_freq="block")),
     ("linear time / block freq", dict(interp="linear", interp_freq="block")),
     ("linear time + linear freq", dict(interp="linear", interp_freq="linear")),
-    ("linear t+f + Gaussian smooth",
-     dict(interp="linear", interp_freq="linear", smooth=(2.0, 4.0))),
+    ("linear time + gauss freq", dict(interp="linear", interp_freq="gauss")),
 ]
 
 # %% [markdown]
@@ -64,7 +67,8 @@ MODES = [
 # Same signal, same (shared) colour scale — only the display resampling differs.
 
 # %%
-grids = [g.to_grid(coeffs, N, nyquist_flat_top=True, **kw) for _, kw in MODES]
+grids = [g.to_grid(coeffs, N, nyquist_flat_top=True, normalize="width", **kw)
+         for _, kw in MODES]
 vmax = max(gd.max() for gd in grids)
 
 fig, axes = plt.subplots(1, 4, figsize=(18, 4.2), sharex=True, sharey=True)
@@ -94,7 +98,7 @@ plt.show()
 row = 20  # inside the fc~24 band (width 16): ~16 samples across N
 fig, ax = plt.subplots(figsize=(9, 4))
 for name, kw in MODES:
-    grid = g.to_grid(coeffs, N, nyquist_flat_top=True, **kw)
+    grid = g.to_grid(coeffs, N, nyquist_flat_top=True, normalize="width", **kw)
     ax.plot(np.arange(N), grid[row], lw=1.3, label=name)
 ax.set_title(f"Magnitude along time at frequency bin {row}")
 ax.set_xlabel("time (samples)")

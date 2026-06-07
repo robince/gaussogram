@@ -66,13 +66,14 @@ def plot_gaussogram(
     scheme="dyadic_dual_real",
     interp="linear",
     interp_freq="block",
+    normalize="width",
     smooth=None,
     log=False,
 ):
     coeffs = g.gft1d_real(signal, scheme=scheme, nyquist_flat_top=True)
     grid = g.to_grid(
         coeffs, len(signal), scheme=scheme, nyquist_flat_top=True,
-        interp=interp, interp_freq=interp_freq, smooth=smooth,
+        interp=interp, interp_freq=interp_freq, normalize=normalize, smooth=smooth,
     )
 
     fig, (ax_sig, ax_tf) = plt.subplots(

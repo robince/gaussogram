@@ -49,7 +49,8 @@ def band_energy(coeffs, layout):
 
 
 def make_grid(coeffs, scheme):
-    return g.to_grid(coeffs, N, scheme=scheme, nyquist_flat_top=True, interp="linear")
+    return g.to_grid(coeffs, N, scheme=scheme, nyquist_flat_top=True,
+                     interp="linear", normalize="width")
 
 
 # %% [markdown]
