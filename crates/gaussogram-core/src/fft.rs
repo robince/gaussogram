@@ -6,6 +6,7 @@ use num_complex::Complex;
 use std::sync::Arc;
 
 /// A cached, reusable complex FFT plan (forward or inverse, unnormalised).
+#[allow(clippy::len_without_is_empty)]
 pub trait ComplexPlan: Send + Sync {
     fn len(&self) -> usize;
     fn scratch_len(&self) -> usize;
@@ -15,6 +16,7 @@ pub trait ComplexPlan: Send + Sync {
 
 /// A cached real-to-complex forward FFT plan producing the half-spectrum
 /// `0..=N/2` (length `N/2 + 1`).
+#[allow(clippy::len_without_is_empty)]
 pub trait RealForwardPlan: Send + Sync {
     fn len(&self) -> usize;
     fn output_len(&self) -> usize;
@@ -24,6 +26,7 @@ pub trait RealForwardPlan: Send + Sync {
 
 /// A cached complex-to-real inverse FFT plan (consumes the half-spectrum
 /// `0..=N/2`, produces `N` real samples; unnormalised).
+#[allow(clippy::len_without_is_empty)]
 pub trait RealInversePlan: Send + Sync {
     fn len(&self) -> usize;
     fn input_len(&self) -> usize;
