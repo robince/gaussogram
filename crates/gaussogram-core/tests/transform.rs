@@ -32,6 +32,76 @@ fn golden_path() -> PathBuf {
         .join("../../golden/complex_golden.txt")
 }
 
+/// Deterministic real input — MUST match `golden/gen_real_golden.py::make_input`.
+fn real_golden_input(n: usize) -> Vec<f64> {
+    (0..n)
+        .map(|i| {
+            let ii = i as f64;
+            (2.0 * PI * 2.0 * ii / n as f64).sin()
+                + 0.5 * (2.0 * PI * 5.0 * ii / n as f64).cos()
+                + 0.05 * ii / n as f64
+        })
+        .collect()
+}
+
+fn real_golden_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../golden/real_golden.txt")
+}
+
+/// Regression vectors for the real schemes. Unlike the complex parity test
+/// (checked against the reference C library), these were generated from this
+/// implementation after its forward values were validated against an
+/// independent numpy implementation of the definition
+/// (python/tests/test_reference_impl.py); they guard against numerical drift.
+#[test]
+fn real_golden_regression() {
+    let text = fs::read_to_string(real_golden_path()).expect("golden file present");
+    let mut lines = text.lines();
+    let mut cases = 0;
+    while let Some(header) = lines.next() {
+        let mut it = header.split_whitespace();
+        assert_eq!(it.next(), Some("SCHEME"));
+        let scheme_name = it.next().unwrap();
+        assert_eq!(it.next(), Some("N"));
+        let n: usize = it.next().unwrap().parse().unwrap();
+        assert_eq!(it.next(), Some("BPO"));
+        let bpo: usize = it.next().unwrap().parse().unwrap();
+        assert_eq!(it.next(), Some("LEN"));
+        let len: usize = it.next().unwrap().parse().unwrap();
+
+        let mut expected = Vec::with_capacity(len);
+        for _ in 0..len {
+            let line = lines.next().unwrap();
+            let mut p = line.split_whitespace();
+            let re: f64 = p.next().unwrap().parse().unwrap();
+            let im: f64 = p.next().unwrap().parse().unwrap();
+            expected.push(Complex::new(re, im));
+        }
+
+        let scheme = match scheme_name {
+            "dyadic_real" => dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap(),
+            "dyadic_dual_real" => {
+                dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap()
+            }
+            other => panic!("unknown scheme in golden file: {other}"),
+        };
+        let engine = build(scheme);
+        assert_eq!(engine.output_len(), len, "{scheme_name} N={n} bpo={bpo}");
+        let signal = real_golden_input(n);
+        let mut out = vec![Complex::new(0.0, 0.0); len];
+        engine.forward(&signal, &mut out).unwrap();
+
+        for (i, (a, b)) in out.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - b).norm() < 1e-12,
+                "{scheme_name} N={n} bpo={bpo} coeff {i}: got {a}, expected {b}"
+            );
+        }
+        cases += 1;
+    }
+    assert!(cases >= 10, "expected at least 10 golden cases, got {cases}");
+}
+
 #[test]
 fn complex_parity_against_c_reference() {
     let text = fs::read_to_string(golden_path()).expect("golden file present");
