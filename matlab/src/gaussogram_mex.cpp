@@ -42,6 +42,12 @@ const char* status_message(int32_t status) {
             return "output length mismatch";
         case GAUSSOGRAM_STATUS_INPUT_LEN_MISMATCH:
             return "input length mismatch";
+        case GAUSSOGRAM_STATUS_BANDS_PER_OCTAVE:
+            return "bands_per_octave must be a power of two >= 1";
+        case GAUSSOGRAM_STATUS_UNKNOWN_SCHEME:
+            return "unknown scheme id";
+        case GAUSSOGRAM_STATUS_UNSUPPORTED_OPTION:
+            return "option not supported by this scheme (nyquist_flat_top needs dyadic_dual_real)";
         case GAUSSOGRAM_STATUS_INTERNAL:
             return "internal error";
         default:
@@ -82,13 +88,20 @@ void require_real_double(const mxArray* arg, const char* id, const char* name) {
     }
 }
 
-// RAII handle wrapper so a thrown mexErr (longjmp) still frees the engine —
-// actually mexErrMsgIdAndTxt longjmps and skips destructors, so we only call
-// mexErr after destroying the handle. This struct just centralises cleanup.
+// Handle wrapper centralising cleanup. mexErrMsgIdAndTxt may longjmp and skip
+// destructors (C Matrix API), so every error path with a live owned handle
+// must call reset() explicitly BEFORE raising; the destructor only covers the
+// success path and MATLAB versions where the error unwinds as a C++ exception.
 struct Handle {
     GaussogramHandle* ptr = nullptr;
+    void reset() {
+        if (ptr) {
+            gaussogram_destroy(ptr);
+            ptr = nullptr;
+        }
+    }
     ~Handle() {
-        if (ptr) gaussogram_destroy(ptr);
+        reset();
     }
 };
 
@@ -121,7 +134,9 @@ void infer_segments(const mxArray* sig_in, size_t* n, size_t* count) {
 
 // Run a forward transform through an existing engine into a freshly allocated
 // complex output (output_len x count); errors via mexErr on a non-OK status.
-mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in) {
+// `owned` (nullable) is destroyed before raising so a longjmp cannot leak it;
+// pass nullptr for persistent handles that must outlive the error.
+mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in, Handle* owned) {
     require_real_double(sig_in, "gaussogram:sigType", "signal");
     size_t n, count;
     infer_segments(sig_in, &n, &count);
@@ -139,6 +154,7 @@ mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in) {
     }
     if (st != GAUSSOGRAM_STATUS_OK) {
         mxDestroyArray(result);
+        if (owned) owned->reset();
         mexErrMsgIdAndTxt("gaussogram:forward",
                           "forward failed with status %d (%s).", st, status_message(st));
     }
@@ -171,7 +187,7 @@ void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 
     Handle h;
     h.ptr = make_handle(scheme_id, n, window_id, nyquist);
-    plhs[0] = forward_into_output(h.ptr, sig_in);
+    plhs[0] = forward_into_output(h.ptr, sig_in, &h);
     (void)nlhs;
 }
 
@@ -202,7 +218,7 @@ void op_create(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 void op_forward_handle(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 3, "gaussogram:nrhs", "forward_handle expects (op, handle, signal).");
     GaussogramHandle* h = read_handle(prhs[1]);
-    plhs[0] = forward_into_output(h, prhs[2]);
+    plhs[0] = forward_into_output(h, prhs[2], nullptr);  // persistent handle: keep alive
     (void)nlhs;
 }
 
@@ -251,13 +267,19 @@ void op_scheme_bands(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     Handle h;
     h.ptr = make_handle(scheme_id, n, window_id, nyquist);
     int32_t nb = gaussogram_num_bands(h.ptr);
-    require(nb > 0, "gaussogram:bands", "scheme has no bands.");
+    if (nb <= 0) {
+        h.reset();
+        mexErrMsgIdAndTxt("gaussogram:bands", "scheme has no bands.");
+    }
 
     std::vector<int64_t> lo(nb), width(nb), fcentre(nb), off(nb);
     int32_t got = gaussogram_scheme_bands(
         h.ptr, lo.data(), width.data(), fcentre.data(), off.data(),
         static_cast<size_t>(nb));
-    require(got == nb, "gaussogram:bands", "scheme_bands returned an unexpected count.");
+    if (got != nb) {
+        h.reset();
+        mexErrMsgIdAndTxt("gaussogram:bands", "scheme_bands returned an unexpected count.");
+    }
 
     plhs[0] = mxCreateDoubleMatrix(static_cast<mwSize>(nb), 4, mxREAL);
     double* m = mxGetDoubles(plhs[0]);
@@ -303,6 +325,8 @@ void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     double* out = mxGetDoubles(plhs[0]);
     int32_t st = gaussogram_inverse_real(h.ptr, coeffs, clen, out, n);
     if (st != GAUSSOGRAM_STATUS_OK) {
+        mxDestroyArray(plhs[0]);
+        h.reset();
         mexErrMsgIdAndTxt("gaussogram:inverse",
                           "inverse_real failed with status %d (%s).", st, status_message(st));
     }

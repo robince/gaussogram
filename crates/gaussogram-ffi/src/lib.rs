@@ -1,9 +1,7 @@
 //! C ABI shim for MATLAB / other C callers. No panics cross the boundary
 //! (bodies are wrapped in `catch_unwind`); errors are integer status codes.
 
-use std::os::raw::c_char;
 use std::panic;
-use std::ptr;
 use std::slice;
 
 use num_complex::Complex;
@@ -11,12 +9,12 @@ use num_complex::Complex;
 use gaussogram_core::{
     build, complex_partitions, dyadic_complex_with, dyadic_dual_real_with, dyadic_real_with,
     legacy_real_partitions, Gaussogram1d, WindowKind, STATUS_INTERNAL, STATUS_OK,
-    STATUS_UNKNOWN_WINDOW,
+    STATUS_UNKNOWN_SCHEME, STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
 };
 
 pub use gaussogram_core::{
-    STATUS_NOT_INVERTIBLE, STATUS_OUTPUT_LEN_MISMATCH, STATUS_POWER_OF_TWO, STATUS_TOO_SMALL,
-    STATUS_WRONG_INPUT_KIND,
+    STATUS_BANDS_PER_OCTAVE, STATUS_INPUT_LEN_MISMATCH, STATUS_NOT_INVERTIBLE,
+    STATUS_OUTPUT_LEN_MISMATCH, STATUS_POWER_OF_TWO, STATUS_TOO_SMALL, STATUS_WRONG_INPUT_KIND,
 };
 
 /// Opaque handle wrapping a constructed engine so callers build once and
@@ -30,15 +28,26 @@ fn scheme_from_id(
     n: usize,
     kind: WindowKind,
     nyquist_flat_top: bool,
-) -> Option<gaussogram_core::Scheme> {
+) -> Result<gaussogram_core::Scheme, i32> {
     // The C ABI does not yet expose bands_per_octave; the one-band-per-octave
     // cover (bpo = 1) keeps the existing ABI and golden parity unchanged.
-    match scheme_id {
-        0 => dyadic_dual_real_with(n, kind, nyquist_flat_top, 1).ok(),
-        1 => dyadic_real_with(n, kind, 1).ok(),
-        2 => dyadic_complex_with(n, kind).ok(),
-        _ => None,
-    }
+    let s = match scheme_id {
+        0 => dyadic_dual_real_with(n, kind, nyquist_flat_top, 1),
+        1 | 2 => {
+            // Reject options the scheme does not support instead of silently
+            // ignoring them.
+            if nyquist_flat_top {
+                return Err(STATUS_UNSUPPORTED_OPTION);
+            }
+            if scheme_id == 1 {
+                dyadic_real_with(n, kind, 1)
+            } else {
+                dyadic_complex_with(n, kind)
+            }
+        }
+        _ => return Err(STATUS_UNKNOWN_SCHEME),
+    };
+    s.map_err(|e| e.status_code())
 }
 
 fn kind_from_id(window_id: i32) -> Option<WindowKind> {
@@ -67,8 +76,9 @@ pub unsafe extern "C" fn gaussogram_create(
         let Some(kind) = kind_from_id(window_id) else {
             return STATUS_UNKNOWN_WINDOW;
         };
-        let Some(scheme) = scheme_from_id(scheme_id, n, kind, nyquist_flat_top != 0) else {
-            return STATUS_POWER_OF_TWO; // closest generic construction failure
+        let scheme = match scheme_from_id(scheme_id, n, kind, nyquist_flat_top != 0) {
+            Ok(s) => s,
+            Err(status) => return status,
         };
         let engine = build(scheme);
         let boxed = Box::new(GaussogramHandle { engine });
@@ -151,7 +161,10 @@ pub unsafe extern "C" fn gaussogram_forward_real_batch(
             return STATUS_INTERNAL;
         }
         let engine = unsafe { &(*handle).engine };
-        let flat = unsafe { slice::from_raw_parts(signals, n * count) };
+        let Some(total) = n.checked_mul(count) else {
+            return STATUS_INTERNAL;
+        };
+        let flat = unsafe { slice::from_raw_parts(signals, total) };
         let segs: Vec<&[f64]> = (0..count).map(|i| &flat[i * n..(i + 1) * n]).collect();
         let out_complex =
             unsafe { slice::from_raw_parts_mut(out as *mut Complex<f64>, out_len_complex) };
@@ -297,13 +310,4 @@ pub unsafe extern "C" fn gaussogram_scheme_bands(
         nb as i32
     }));
     result.unwrap_or(-1)
-}
-
-/// Reserved for a future name-based constructor; currently unused.
-///
-/// # Safety
-/// `_name` must be a valid C string if non-null.
-#[no_mangle]
-pub unsafe extern "C" fn gaussogram_unused_name_marker(_name: *const c_char) -> *const c_char {
-    ptr::null()
 }
