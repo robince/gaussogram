@@ -16,6 +16,7 @@ dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
 demo = ["matplotlib>=3.6"]
+sparse = ["scipy>=1.10"]  # to_sparse_adjacency
 test = ["pytest>=7"]
 
 [tool.maturin]

@@ -113,7 +113,11 @@ def inverse_real(
 ) -> NDArray[np.float64]:
     """Inverse of the invertible `dyadic_real` scheme (length-``N/2+1`` input).
 
-    ``bands_per_octave`` must match the value passed to the forward transform.
+    .. warning::
+        ``bands_per_octave`` (and ``window_type``) must match the values passed
+        to the forward transform. A mismatch **cannot be detected** — the packed
+        length ``N/2+1`` is the same for every ``bands_per_octave`` — and
+        silently reconstructs the wrong signal.
     """
     coeffs = _require_1d(coeffs, np.complex128, "coeffs")
     return _native.inverse_real(coeffs, window_type, int(bands_per_octave))
@@ -281,6 +285,13 @@ def to_grid(
     """
     coeffs = np.ascontiguousarray(coeffs, dtype=np.complex128)
     layout = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
+    expected = int((layout.out_off + layout.width).max())
+    if coeffs.ndim != 1 or len(coeffs) != expected:
+        raise ValueError(
+            f"coeffs has length {coeffs.size} but scheme {scheme!r} with n={n} "
+            f"packs {expected} coefficients; check n and scheme match the "
+            f"forward transform"
+        )
     nfreq = n // 2 + 1
 
     if interp not in ("linear", "nearest"):
@@ -393,7 +404,7 @@ class CoeffGeometry(NamedTuple):
     df: NDArray[np.float64]     #: frequency extent (bins) = width
     logf: NDArray[np.float64]   #: log2(freq), DC floored to log2(0.5) = -1
     level: NDArray[np.int64]    #: octave index = floor(log2(centre freq))
-    sub: NDArray[np.int64]      #: within-octave sub-band rank (0..bands_per_octave-1)
+    sub: NDArray[np.int64]      #: within-octave sub-band rank (low->high frequency)
     tiling: NDArray[np.int64]   #: 0 = tiling A, 1 = tiling B (dual scheme)
     band: NDArray[np.int64]     #: index of the band each coefficient belongs to
 
