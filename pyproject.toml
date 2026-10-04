@@ -18,6 +18,7 @@ dependencies = ["numpy>=1.23"]
 demo = ["matplotlib>=3.6"]
 sparse = ["scipy>=1.10"]  # to_sparse_adjacency
 test = ["pytest>=7"]
+benchmark = ["pywavelets>=1.8", "scipy>=1.10", "stockwell>=1.2", "matplotlib>=3.6"]
 
 [tool.maturin]
 manifest-path = "crates/gaussogram-py/Cargo.toml"

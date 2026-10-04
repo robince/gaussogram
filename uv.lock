@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.11'",
@@ -425,6 +425,14 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+benchmark = [
+    { name = "matplotlib" },
+    { name = "pywavelets", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pywavelets", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "stockwell" },
+]
 demo = [
     { name = "matplotlib" },
 ]
@@ -448,11 +456,15 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "matplotlib", marker = "extra == 'benchmark'", specifier = ">=3.6" },
+    { name = "pywavelets", marker = "extra == 'benchmark'", specifier = ">=1.8" },
+    { name = "scipy", marker = "extra == 'benchmark'", specifier = ">=1.10" },
+    { name = "stockwell", marker = "extra == 'benchmark'", specifier = ">=1.2" },
     { name = "matplotlib", marker = "extra == 'demo'", specifier = ">=3.6" },
     { name = "numpy", specifier = ">=1.23" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7" },
 ]
-provides-extras = ["demo", "test"]
+provides-extras = ["demo", "test", "benchmark"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1818,4 +1830,43 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bd/f4/c67440c7fb409a71b7404b7aefcd7569a9c0d6bd071299bf4198ae7a5d95/widgetsnbextension-4.0.15.tar.gz", hash = "sha256:de8610639996f1567952d763a5a41af8af37f2575a41f9852a38f947eb82a3b9", size = 1097402, upload-time = "2025-11-01T21:15:55.178Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/0e/fa3b193432cfc60c93b42f3be03365f5f909d2b3ea410295cf36df739e31/widgetsnbextension-4.0.15-py3-none-any.whl", hash = "sha256:8156704e4346a571d9ce73b84bee86a29906c9abfd7223b7228a28899ccf3366", size = 2196503, upload-time = "2025-11-01T21:15:53.565Z" },
+]
+[[package]]
+name = "stockwell"
+version = "1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b7/23/8f18c89595fbc272186506f9d4c58a97a59aa1245408d7e8c0937903f573/stockwell-1.2.tar.gz", hash = "sha256:48b1df34fb27bb110650823c2a9f2b4e2a6a7412f3c1c7b05d69419552a26ea8", size = 40310, upload-time = "2025-01-08T10:52:35.407Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/91/db6c86ef8e1864f0f0f0d626459037edaf3f0a6763e30ac8e9ad3fa226fb/stockwell-1.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:16f7da927b6e847c3dd6ad46bf5dd713065d8217c59359a72af4d2efb5276bec", size = 494160, upload-time = "2025-01-08T10:51:02.571Z" },
+    { url = "https://files.pythonhosted.org/packages/77/7f/25ec1f82e4d5653b79bbbd8e7d03849f9869dab7a9a89b3afa9340e1b523/stockwell-1.2-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:b964f5395021ffe89b9eb8db33a23e3928db4fcdbbab229f76abd4e9310bf5d1", size = 431000, upload-time = "2025-01-08T10:51:05.75Z" },
+    { url = "https://files.pythonhosted.org/packages/59/83/9cfdd399423e8162e17eac7d19290d120d83985b3cf1884a40bf8fb189a5/stockwell-1.2-cp310-cp310-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:cc31c7d27134000d52864271ef16af62431f7a76e11731c10da59cfd107f63f4", size = 482808, upload-time = "2025-01-08T10:51:09.001Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/56/63dcc27210c20c2cdde9a1adf5a78e954de6be090e3a36d4455bd336c2b4/stockwell-1.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8c5e4c2f7e0b3e9c2d45008bfb5148faec807ad40b6dac8276ed47dbd81c762f", size = 593017, upload-time = "2025-01-08T10:51:12.002Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/a1/2e97aa03c9d4aa5e7ff6e76d4cd75f2d260eee6a12a1c39096a7d616fc9d/stockwell-1.2-cp310-cp310-musllinux_1_2_i686.whl", hash = "sha256:c3bfd3728aa43cbf6a503d1c495b31d6547faa52a2063ee7c7a12cff72f6c05f", size = 595107, upload-time = "2025-01-08T10:51:13.529Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/74/cc581f17bfb0f760a39e699a4058fbe8eadccced9e93724e4a4be80f3128/stockwell-1.2-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:1f4bccd9a41e0796c3a9b7f429a12b00d6e98df6ccf0c3870c1d00a88491887f", size = 597314, upload-time = "2025-01-08T10:51:16.027Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/8f/0922ce884ef5b0e62b14dc45cd9e5facd425d221fb5e00db663d461edd2d/stockwell-1.2-cp310-cp310-win_amd64.whl", hash = "sha256:022d393b1def3fdd125e85a4fd2e5a30023b41c12ed628f6289f60ae48dc3da1", size = 625997, upload-time = "2025-01-08T10:51:18.639Z" },
+    { url = "https://files.pythonhosted.org/packages/27/c6/8ed17ae03cf40e14e9c618b3df017c7a4b8d0b389cd3e106a78a8fff0f9b/stockwell-1.2-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:11169f06f47f34dee02d4170cc854728215e6782ab9cd7a859d60e9c6b145524", size = 494163, upload-time = "2025-01-08T10:51:24.708Z" },
+    { url = "https://files.pythonhosted.org/packages/40/75/864378b55c1d28b8b66b5c53f4f756a2439e283c1f17c618050e8fc20295/stockwell-1.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:29f9853088d631c9ccfae9671c54b4f4d101f5366d636f6a7c29bccfc9c7636f", size = 430997, upload-time = "2025-01-08T10:51:26.053Z" },
+    { url = "https://files.pythonhosted.org/packages/82/5d/f1fd3c3ac534ed0a7c8ce443cb9e3f3119d189e636a78c7416b4e242ec3d/stockwell-1.2-cp311-cp311-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:b898705292c9cb376c935400751675e293308bcb4f17f27ca23f8a3080836d47", size = 482808, upload-time = "2025-01-08T10:51:27.628Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/2b/4f4139b1815b65fec50c52f7ac8381491690dff23d0c0046dd2eb216e0ee/stockwell-1.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4c851ce8adba57abb5750388840db24b918c62549639a283903c7c938b083048", size = 593017, upload-time = "2025-01-08T10:51:29.253Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/07/f492757959d8f54e2379b208eb6fc13a2c4a01cff8346f8ffc0167ab8d70/stockwell-1.2-cp311-cp311-musllinux_1_2_i686.whl", hash = "sha256:8783e6441543c46cb493f1cc488e3c522346cdd5bfab0fb916e1f7dd8f5356b0", size = 595112, upload-time = "2025-01-08T10:51:30.695Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/a4/0173be6d6ab007703406acd41509ad929d8ecd07371058da57cfb8bf3713/stockwell-1.2-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:4397703dc2accaff21fb33cad90d389d6d1d3e4bce319cc533ece7baabaeb16a", size = 597326, upload-time = "2025-01-08T10:51:32.363Z" },
+    { url = "https://files.pythonhosted.org/packages/33/10/8a51706704f39a1b101bad0ad49f92806ef1f6ea4d37edbc9852d117ed7c/stockwell-1.2-cp311-cp311-win_amd64.whl", hash = "sha256:c6519d312cf6ec04ac0f9c1226b8babd13b9ddc1f76d7df9053a1864d7b19df5", size = 625995, upload-time = "2025-01-08T10:51:37.245Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/7c/1cb5936073b1cd029a911dfca99560c84a98800553cfaebbc8b46f39a7ad/stockwell-1.2-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:88d15909d3739a8dab01ad553bad39f97aa8995e329ebba93e3865dd35c44e12", size = 488338, upload-time = "2025-01-08T10:51:38.682Z" },
+    { url = "https://files.pythonhosted.org/packages/84/98/fe85d4e98e489ea15f57656d94cd3cbf32c191f68e062265d34b27ea1259/stockwell-1.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:c3245b78877af32828d050990be88b8d3fd5accd2f75289cafec9095179ef2ae", size = 430999, upload-time = "2025-01-08T10:51:40.341Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/d5/d843c16214328ea77a47720c67e578e1101de52c0fb3da2ec322446458d2/stockwell-1.2-cp312-cp312-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:841680bd8f0f938353e914788436293b4074697a0ccfea5ee242f1bb4cfcb190", size = 482817, upload-time = "2025-01-08T10:51:42.113Z" },
+    { url = "https://files.pythonhosted.org/packages/49/c7/4b46ad5df5021bf0fd58bebdb6810cdc4759bf0db250eb4a575ac5ea7194/stockwell-1.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:666014ba16677f3a9c4640aa495a422950e078320edb35b3b682d4a209dd5ded", size = 593067, upload-time = "2025-01-08T10:51:43.883Z" },
+    { url = "https://files.pythonhosted.org/packages/57/d1/b16e70264593005d9b34e4fa25c80d8afcfb2bb85bd0daea77d97265464f/stockwell-1.2-cp312-cp312-musllinux_1_2_i686.whl", hash = "sha256:9e3e04846f53c705a5a5b884bb31a585e634a414b8dae4d06f2a10ac52dbddb5", size = 595124, upload-time = "2025-01-08T10:51:45.876Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/3c/37a26458c49e0e82e26579e468973315ee8848ca3555476ed88025cc8921/stockwell-1.2-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:16155ab09f7283cebbfc4d5b91e798db7ee739d262a9d27206e57ea5573d2b85", size = 597402, upload-time = "2025-01-08T10:51:50.36Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/0e/7c3b1b7849957de21730809b59ee4e408281045ae91769145b9a603784df/stockwell-1.2-cp312-cp312-win_amd64.whl", hash = "sha256:66968ce80aef6cc187c91d4ee12fc6bb1c60dd980a6a81a5eabe5455584f7306", size = 626000, upload-time = "2025-01-08T10:51:52.161Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/65/7b9b170380491e30c149403e49d320b5d1478974c59087f57caa06211309/stockwell-1.2-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:48c8d36977860e2c8c6163b7b7677d1645a6ffb08ce642de51ce40b7453a6c03", size = 488334, upload-time = "2025-01-08T10:51:55.06Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/c2/4d1285f7887c3ba2a2181f4562aefbe1d7a209ed13998cbff4dba24c2e7d/stockwell-1.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:e8449d4909b5feaeb32b50e9548c2230c477ea9ccf3ef6cd15e73f8f2d7fdb48", size = 431000, upload-time = "2025-01-08T10:51:58.825Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/67/b30f98e5d081f94c001234221acc9b7b4b3e65088773ca19e167e5b4bec6/stockwell-1.2-cp313-cp313-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:e69db747c1a2923194fee73dbf614cbf1ea28c70c65f099534b827c94965c7da", size = 482820, upload-time = "2025-01-08T10:52:02.952Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/a0/cb028d0b90660dd405acf7b27091c9ea7e7896a84c33f274bcc185e0229f/stockwell-1.2-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:00dbe08ccef4eb9e7eed21c80c00b2838098c2edbdd832eab8cfa7f3ba517c5c", size = 593067, upload-time = "2025-01-08T10:52:05.768Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/8d/f191c6ed9fbf6a31ec9e699a0ee614850f796b807858c783c3ca63daa935/stockwell-1.2-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:75f3317471eb72b78b9a5fb26dc3011de42478d8c714ce88fc9080e701431c62", size = 595122, upload-time = "2025-01-08T10:52:07.123Z" },
+    { url = "https://files.pythonhosted.org/packages/08/e3/c797ae7968b36af894c786112e40111c22600584f1a78efb595fa87a8278/stockwell-1.2-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:963953aefc9cdac773a85db80eabe4098df629a1759b9b2a0d1216de38ca225b", size = 597404, upload-time = "2025-01-08T10:52:08.621Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/9c/0c499b08090b86fb6f57c749398c49b2d4e057b99d181d137879ef8b50d3/stockwell-1.2-cp313-cp313-win_amd64.whl", hash = "sha256:3e4c6016263b6b609555d73ebf75b7d17c14a2f499dab9421297070de6d1431c", size = 625997, upload-time = "2025-01-08T10:52:12.51Z" },
 ]

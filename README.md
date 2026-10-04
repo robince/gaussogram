@@ -179,6 +179,18 @@ data change, not new control flow.
 - `extern/fst-uofc` — the reference library (a local checkout / symlink).
 - `RUST_PORT_SPEC.md` — the porting specification.
 
+## Runtime benchmarks
+
+Compare Gaussogram settings against discrete/continuous wavelets, the full
+standard Stockwell transform, and STFT with reproducible timing and output-size
+reports. Setup, reusable handles, one-shot calls, and optional display costs are
+measured separately. See [benchmark instructions](benchmarks/README.md).
+
+```bash
+python benchmarks/run.py --preset quick
+python benchmarks/report.py reports/benchmarks/latest/results.json
+```
+
 ## Tests
 
 ```bash
