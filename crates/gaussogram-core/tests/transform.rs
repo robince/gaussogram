@@ -269,12 +269,13 @@ fn nyquist_flat_top_changes_top_band_window() {
     let n = 256;
     let plain = dyadic_dual_real_with(n, WindowKind::Gaussian, false, 1).unwrap();
     let flat = dyadic_dual_real_with(n, WindowKind::Gaussian, true, 1).unwrap();
-    // Top A band is the one ending at N/2+1.
-    let top_idx = plain
-        .bands
-        .iter()
-        .position(|b| b.src_hi == n / 2 + 1)
-        .unwrap();
+    // Top A band is the one ending at N/2, just below the width-1 Nyquist band.
+    let top_idx = plain.bands.iter().position(|b| b.src_hi == n / 2).unwrap();
+    let nyq_idx = plain.bands.iter().position(|b| b.src_lo == n / 2).unwrap();
+    assert_eq!(plain.bands[nyq_idx].width(), 1);
+    // The Nyquist band itself is untapered either way.
+    assert_eq!(plain.windows[nyq_idx].screen, vec![1.0]);
+    assert_eq!(flat.windows[nyq_idx].screen, vec![1.0]);
     let w_plain = &plain.windows[top_idx];
     let w_flat = &flat.windows[top_idx];
     assert!(w_flat.nyquist_flat_top);

@@ -42,6 +42,10 @@ the Gaussian "dead zones" at octave joins that the single dyadic cover suffers.
 `N` must be a power of two. The Gaussian window is the default; a `box` window is
 also available.
 
+The real schemes' dyadic cover is `[0,1), [1,2), [2,4), …, [N/4, N/2)` plus the
+Nyquist bin `N/2` as its own width-1 band (exact, like DC), so every band width
+is a power of two and every per-band inverse FFT is radix-2.
+
 ### Bands per octave
 
 Both real schemes take a `bands_per_octave` option (a power of two: `1, 2, 4, …`,

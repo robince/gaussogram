@@ -150,9 +150,9 @@ Conventions:
 Two tilings, concatenated in the output buffer: **A** then **B**.
 
 **Tiling A — lossless dyadic cover of the positive half-spectrum** (bins `0 .. N/2`,
-Nyquist folded into the top band; Nyquist edge handled per §3.2):
+the Nyquist bin as its own width-1 band; Nyquist edge handled per §3.2):
 
-- Right edges: `[1, 2, 4, 8, …, N/4, N/2 + 1]`
+- Right edges: `[1, 2, 4, 8, …, N/4, N/2, N/2 + 1]`
 - Bands / widths:
   - `{0}` width 1 (DC, exact)
   - `[1, 2)` width 1 (exact)
@@ -160,8 +160,11 @@ Nyquist folded into the top band; Nyquist edge handled per §3.2):
   - `[4, 8)` width 4
   - … (octaves) …
   - `[N/8, N/4)` width `N/8`
-  - `[N/4, N/2]` width `N/4 + 1` (top octave **including** Nyquist)
-- Count: **N/2 + 1** coefficients.
+  - `[N/4, N/2)` width `N/4` (top octave)
+  - `{N/2}` width 1 (Nyquist, exact)
+- Count: **N/2 + 1** coefficients. Every width is a power of two, so every band IFFT is
+  radix-2. (Folding Nyquist into the top band instead would make the widest band
+  `N/4 + 1` wide — often prime, e.g. 257 or 65537 — and its IFFT 3.5–6x slower.)
 
 **Tiling B — half-octave-offset dyadic bank, each band centred on an A join.** For each of
 A's interior octave boundaries (its dead zones) `b ∈ {2, 4, 8, …, N/4}`, B has one band:
@@ -196,7 +199,7 @@ Verified: `N=8 → 7`, `N=16 → 15`, `N=256 → 255`, `N=1024 → 1023`.
 
 **Why B stops at `b = N/4` and has no band at Nyquist:** the only boundary above `N/4` is
 Nyquist itself (`N/2`), which is a spectrum *endpoint*, not an interior join between two
-tapering bands — so it needs no offset partner (it is handled within A's top band, §3.2).
+tapering bands — so it needs no offset partner (it is A's own exact width-1 band, §3.2).
 The lowest joins (`b=2, 4`) sit between width-1/2 A bands whose Gaussians barely taper, so
 their dead zones are negligible; B still covers them for uniformity but they could be
 dropped with little effect.
@@ -212,7 +215,8 @@ dropped with little effect.
 | A      | `[8,16)`   | 8   | 16  | 8     |                   |
 | A      | `[16,32)`  | 16  | 32  | 16    |                   |
 | A      | `[32,64)`  | 32  | 64  | 32    |                   |
-| A      | `[64,128]` | 64  | 129 | 65    |                   |
+| A      | `[64,128)` | 64  | 128 | 64    |                   |
+| A      | Nyquist `{128}` | 128 | 129 | 1 |                   |
 | **A total** |       |     |     | **129** |                 |
 | B      | `[1,3)`    | 1   | 3   | 2     | b=2               |
 | B      | `[2,6)`    | 2   | 6   | 4     | b=4               |
@@ -285,29 +289,32 @@ deliberately and write a test pinning the chosen behaviour.
 
 ### 3.2 Nyquist edge handling (tiling A top band)
 
-The top band of tiling A includes the Nyquist bin `N/2`. This is **not** a behaviour of the
-C reference: `windowsFromPars` (`gft.c` ~line 301) simply overwrites the top band's window
-slots with the generated Gaussian slice, Nyquist included, so the Nyquist-adjacent bins sit
-in the Gaussian taper and are attenuated. We must decide deliberately, and the two schemes
-differ:
+The Nyquist bin `N/2` is its own width-1 band, so like DC it is exact (screen `[1.0]`, no
+taper). The top band `[N/4, N/2)` ends just below it, so the bins adjacent to Nyquist sit
+in that band's Gaussian taper and are attenuated, as in the C reference (`windowsFromPars`,
+`gft.c` ~line 301, which fills the top band's window slots with the generated Gaussian
+slice). We must decide deliberately whether to keep that, and the two schemes differ:
 
-- **`dyadic_real` (invertible baseline): match the C reference exactly — no special edge
-  handling.** Round-trip invertibility (§8) depends on the forward window being exactly what
-  the inverse expects; do not perturb it. Document Nyquist-edge attenuation as a known,
-  intended property of this scheme.
+- **`dyadic_real` (invertible baseline): no special edge handling.** Each band's window is
+  the plain Gaussian screen built as in the C reference (§3.1); the band *layout* is
+  gaussogram's own (the Nyquist bin is a separate band), so outputs are not comparable to
+  any C real-scheme output. The real schemes are instead checked against an independent
+  numpy implementation of the definition and pinned by golden vectors (§8). Round-trip invertibility (§8) depends on the forward window being exactly what the
+  inverse expects; do not perturb it. Document Nyquist-adjacent attenuation in the top band
+  as a known, intended property of this scheme.
 
 - **`dyadic_dual_real` (lossy feature scheme): optional flat-top at Nyquist**, controlled by
-  an explicit `nyquist_flat_top: bool` field on the top `Window` (default **off**, i.e.
-  match C). When on, construct the top band's frequency-domain window normally, then for
-  every bin from the band **centre** `fcentre` up to and including Nyquist `N/2`, set the
+  an explicit `nyquist_flat_top: bool` field on the top `Window` (default **off**: the plain
+  Gaussian screen, as for `dyadic_real`). When on, construct the top band's frequency-domain window normally, then for
+  every bin from the band **centre** `fcentre` up to the band's top bin `N/2 − 1`, set the
   window value to its peak (the value at `fcentre`, which is the max after the unit-sum
-  normalization). Concretely, for band `[lo, N/2]` with screen `w[0..width]` indexed so that
+  normalization). Concretely, for band `[lo, N/2)` with screen `w[0..width]` indexed so that
   `w[fcentre-lo]` is the peak: `for i in (fcentre-lo)..width { w[i] = w[fcentre-lo]; }`. This
   makes the upper half-window flat so Nyquist-adjacent content is not attenuated, at the
   cost of (intended) non-invertibility for this scheme. Pin the exact values with a test.
 
 Represent the choice with the explicit `Window` field rather than special-casing inside the
-FFT loop. The DC band (width 1) is exact and needs no taper regardless.
+FFT loop. The DC and Nyquist bands (width 1) are exact and need no taper regardless.
 
 ### 3.3 Window kinds
 
@@ -483,12 +490,11 @@ For each input segment of length `N`:
 1. **Forward FFT** of the signal → spectrum, kept **un-windowed**. For real schemes use a
    real FFT (`realfft`) giving the half-spectrum `0..=N/2`; for `dyadic_complex` use a full
    complex FFT over `0..N`. This spectrum is the **shared, read-only source** for every band.
-2. **Per-band: copy → window → IFFT.** For each `Band { src_lo, src_hi, out_off }`:
-   - copy the source slice `spectrum[src_lo..src_hi]` into a length-`width` scratch buffer;
-   - multiply element-wise by **that band's own** `window.screen` (applying the Nyquist
-     flat-top of §3.2 if set);
-   - run the cached length-`width` inverse FFT in place;
-   - write the `width` complex results to `out[out_off .. out_off + width]`.
+2. **Per-band: window → IFFT, in the output.** For each `Band { src_lo, src_hi, out_off }`:
+   - write `spectrum[src_lo..src_hi]` multiplied element-wise by **that band's own**
+     `window.screen` (applying the Nyquist flat-top of §3.2 if set) and by the `1/width`
+     IFFT normalisation into `out[out_off .. out_off + width]`;
+   - run the cached length-`width` inverse FFT in place there.
 3. Output is the concatenation of all bands (tiling A then B for `dyadic_dual_real`).
 
 > **Critical (Finding: overlap).** Do **not** multiply the spectrum once by a single global

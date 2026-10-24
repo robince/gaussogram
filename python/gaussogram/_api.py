@@ -432,8 +432,9 @@ def to_grid(
             else:
                 sigma = fc / (2.0 * np.pi)  # freq-domain σ of the band Gaussian
                 wj = np.exp(-((rows - fc) ** 2) / (2.0 * sigma**2))
-                # Mirror the forward transform's Nyquist flat-top on the top band.
-                if nyquist_flat_top and lo + w >= n // 2 + 1:
+                # Mirror the forward transform's Nyquist flat-top on the top band
+                # (the one ending just below the width-1 Nyquist band).
+                if nyquist_flat_top and lo + w >= n // 2:
                     wj[rows >= fc] = 1.0
             # Accumulate in row blocks so the outer product stays small.
             for b0 in range(r0, r1, step):
