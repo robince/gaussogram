@@ -262,20 +262,33 @@ fn residual(
     c.iter().zip(&tx).map(|(a, b)| a - b).collect()
 }
 
-fn norm(v: &[Complex<f64>]) -> f64 {
-    v.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt()
+/// Per-coefficient band width, so `sqrt(width) * c` is in energy-preserving
+/// units (each band stores a `1/width`-normalised inverse FFT).
+fn coeff_widths(engine: &gaussogram_core::Gaussogram1d) -> Vec<f64> {
+    let mut w = vec![0.0; engine.output_len()];
+    for band in &engine.scheme().bands {
+        w[band.out_off..band.out_off + band.width()].fill(band.width() as f64);
+    }
+    w
+}
+
+/// Norm in signal-energy units: `sqrt(sum_i width_i * |v_i|^2)`.
+fn energy_norm(v: &[Complex<f64>], widths: &[f64]) -> f64 {
+    v.iter().zip(widths).map(|(z, w)| w * z.norm_sqr()).sum::<f64>().sqrt()
 }
 
 #[test]
 fn dual_inverse_is_least_squares() {
     // For perturbed coefficients the frame inverse returns the least-squares
-    // signal: the coefficient residual is orthogonal to the range of the
-    // transform, and no larger than that of inverting tiling A alone.
+    // signal in signal energy: the coefficient residual is orthogonal to the
+    // range of the transform under the width-weighted inner product, and no
+    // larger (in that norm) than that of inverting tiling A alone.
     for &bpo in &[1usize, 4] {
         let n = 512;
         let engine = build(dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap());
         let a_only = build(dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap());
         let olen = engine.output_len();
+        let widths = coeff_widths(&engine);
 
         let x = lcg(1, n);
         let mut c = vec![Complex::new(0.0, 0.0); olen];
@@ -289,15 +302,20 @@ fn dual_inverse_is_least_squares() {
         engine.inverse(&c, &mut xhat).unwrap();
         let r = residual(&engine, &c, &xhat);
 
-        // Orthogonality: Re<r, T y> = 0 for any real y.
+        // Orthogonality: sum_i width_i * Re(conj(r_i) * (T y)_i) = 0 for any real y.
         for seed in 10..15 {
             let mut ty = vec![Complex::new(0.0, 0.0); olen];
             engine.forward(&lcg(seed, n), &mut ty).unwrap();
-            let dot: f64 = r.iter().zip(&ty).map(|(a, b)| (a.conj() * b).re).sum();
-            let rel = dot.abs() / (norm(&r) * norm(&ty));
+            let dot: f64 = r
+                .iter()
+                .zip(&ty)
+                .zip(&widths)
+                .map(|((a, b), w)| w * (a.conj() * b).re)
+                .sum();
+            let rel = dot.abs() / (energy_norm(&r, &widths) * energy_norm(&ty, &widths));
             assert!(
                 rel < 1e-10,
-                "bpo={bpo} seed={seed}: Re<r, Ty>/(|r||Ty|) = {rel}"
+                "bpo={bpo} seed={seed}: <r, Ty>_w/(|r||Ty|) = {rel}"
             );
         }
 
@@ -305,10 +323,96 @@ fn dual_inverse_is_least_squares() {
         a_only.inverse(&c[..n / 2 + 1], &mut x_a).unwrap();
         let r_a = residual(&engine, &c, &x_a);
         assert!(
-            norm(&r) <= norm(&r_a) * (1.0 + 1e-12),
+            energy_norm(&r, &widths) <= energy_norm(&r_a, &widths) * (1.0 + 1e-12),
             "bpo={bpo}: frame residual {} > tiling-A residual {}",
-            norm(&r),
-            norm(&r_a)
+            energy_norm(&r, &widths),
+            energy_norm(&r_a, &widths)
+        );
+    }
+}
+
+/// Reference frame inverse with a chosen blend of the overlapping bands: each
+/// band's FFT is `W_b * X` on its bins, and bin `k` is estimated as
+/// `sum_b weight_b[k] * FFT(c_b)[k] * W_b[k] / sum_b weight_b[k] * W_b[k]^2`.
+fn reference_frame_inverse(
+    engine: &gaussogram_core::Gaussogram1d,
+    c: &[Complex<f64>],
+    band_weight: impl Fn(usize) -> f64,
+) -> Vec<f64> {
+    let scheme = engine.scheme();
+    let n = scheme.n;
+    let mut num = vec![Complex::new(0.0, 0.0); n / 2 + 1];
+    let mut den = vec![0.0f64; n / 2 + 1];
+    let mut planner = rustfft::FftPlanner::<f64>::new();
+    for (band, window) in scheme.bands.iter().zip(scheme.windows.iter()) {
+        let w = band.width();
+        let mut y = c[band.out_off..band.out_off + w].to_vec();
+        planner.plan_fft_forward(w).process(&mut y);
+        let bw = band_weight(w);
+        for (j, (&yj, &sc)) in y.iter().zip(window.screen.iter()).enumerate() {
+            num[band.src_lo + j] += yj * (bw * sc);
+            den[band.src_lo + j] += bw * sc * sc;
+        }
+    }
+    let mut spec: Vec<Complex<f64>> = num.iter().zip(&den).map(|(a, d)| a / d).collect();
+    spec[0].im = 0.0;
+    spec[n / 2].im = 0.0;
+    let mut out = vec![0.0f64; n];
+    realfft::RealFftPlanner::<f64>::new()
+        .plan_fft_inverse(n)
+        .process(&mut spec, &mut out)
+        .unwrap();
+    out.iter().map(|v| v / n as f64).collect()
+}
+
+#[test]
+fn dual_inverse_energy_weighting_beats_stored_weighting_for_independent_noise() {
+    // Error model: zero-mean errors on the stored coefficients, uncorrelated
+    // within each band with covariance proportional to I/width, and
+    // uncorrelated across bands (here independent uniform noise scaled by
+    // 1/sqrt(width)). Every band's estimate of a bin is then equally noisy, so
+    // blending by window power alone (the engine) must beat the
+    // stored-coefficient least squares that also divides each band's weight by
+    // its width. White noise added to the input before `forward` does not fit
+    // this model and would not test it: overlapping bands carry W_b[k] times
+    // the same noise bin, so every exact inverse returns the same noisy
+    // signal. The gain is small (about 0.02-0.04 dB overall, up to ~0.5 dB at
+    // individual overlap bins), so the check is strict ordering on fixed seeds
+    // rather than a margin.
+    for &bpo in &[1usize, 4] {
+        let n = 1024;
+        let engine = build(dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap());
+        let olen = engine.output_len();
+        let widths = coeff_widths(&engine);
+        let (mut err_energy, mut err_stored) = (0.0f64, 0.0f64);
+        for trial in 0..20u64 {
+            let x = lcg(100 + trial, n);
+            let mut c = vec![Complex::new(0.0, 0.0); olen];
+            engine.forward(&x, &mut c).unwrap();
+            let (re, im) = (lcg(200 + trial, olen), lcg(300 + trial, olen));
+            for ((z, w), (r, i)) in c.iter_mut().zip(&widths).zip(re.iter().zip(&im)) {
+                *z += Complex::new(*r, *i) * (0.05 / w.sqrt());
+            }
+
+            let mut x_energy = vec![0.0f64; n];
+            engine.inverse(&c, &mut x_energy).unwrap();
+            // The reference with energy weights reproduces the engine, which
+            // validates the reference used for the stored-coefficient blend.
+            let x_ref = reference_frame_inverse(&engine, &c, |_| 1.0);
+            for (a, b) in x_energy.iter().zip(&x_ref) {
+                assert!((a - b).abs() < 1e-12, "bpo={bpo}: engine {a} vs reference {b}");
+            }
+            let x_stored = reference_frame_inverse(&engine, &c, |w| 1.0 / w as f64);
+
+            let sq = |xh: &[f64]| xh.iter().zip(&x).map(|(a, b)| (a - b).powi(2)).sum::<f64>();
+            err_energy += sq(&x_energy);
+            err_stored += sq(&x_stored);
+        }
+        let gain_db = 10.0 * (err_stored / err_energy).log10();
+        eprintln!("bpo={bpo}: energy weighting improves independent-noise error by {gain_db:.2} dB");
+        assert!(
+            err_energy < err_stored,
+            "bpo={bpo}: energy-weighted error {err_energy} not below stored-weighted {err_stored}"
         );
     }
 }

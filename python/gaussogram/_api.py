@@ -118,11 +118,13 @@ def inverse_real(
     """Inverse of a real-input scheme.
 
     * ``dyadic_real`` (length ``N/2+1``): exact per-band inverse.
-    * ``dyadic_dual_real`` (length ``N-1``): least-squares (canonical dual)
-      frame inverse. Exact for unmodified coefficients; for modified ones
-      (thresholded, masked, denoised) it returns the signal whose coefficients
-      are closest to them, using both tilings, so it is far less sensitive to
-      edits near octave joins than inverting tiling A alone.
+    * ``dyadic_dual_real`` (length ``N-1``): least-squares frame inverse.
+      Exact for unmodified coefficients; for modified ones (thresholded,
+      masked, denoised) it returns the signal whose coefficients are closest
+      to them in signal energy (each band's coefficients weighted by
+      ``sqrt(width)``, undoing the stored ``1/width`` scaling), using both
+      tilings, so it is far less sensitive to edits near octave joins than
+      inverting tiling A alone.
 
     ``scheme=None`` infers the scheme from the length: ``N/2+1`` is always
     ``2^k+1`` and ``N-1`` is always ``2^k-1``, which never coincide.
