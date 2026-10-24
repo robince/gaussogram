@@ -7,7 +7,7 @@ three staggered tones, and a chirp. All results use `N = 512`.
 Reproduce the figures with:
 
 ```bash
-python scripts/compare_bands_per_octave.py     # needs only gaussogram + matplotlib
+uv run --no-sync python scripts/compare_bands_per_octave.py     # needs only gaussogram + matplotlib
 ```
 
 ---
