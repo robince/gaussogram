@@ -407,7 +407,9 @@ impl Gaussogram1d {
     /// For an overlapping scheme (`dyadic_dual_real`) this is the frame
     /// (least-squares) inverse: exact for unmodified coefficients, and for
     /// modified ones (thresholded, masked, denoised) the signal whose
-    /// coefficients are closest to them in the L2 sense.
+    /// coefficients are closest to them in signal energy (each band's
+    /// coefficients weighted by `sqrt(width)`, undoing the stored `1/width`
+    /// normalisation).
     pub fn inverse_loaded(&self, out: &mut [f64], scratch: &mut Scratch) -> Result<(), GaussogramError> {
         if !self.scheme.invertible {
             return Err(GaussogramError::NotInvertible(self.scheme.name));
@@ -505,23 +507,28 @@ impl Gaussogram1d {
     }
 }
 
-/// Canonical dual screens of an overlapping (frame) scheme, one per band.
+/// Dual screens of an overlapping (frame) scheme, one per band, giving the
+/// least-squares inverse in signal energy.
 ///
-/// Band `b` maps its bin slice through `c_b = IFFT_w(W_b * X_slice)`, a
-/// `1/sqrt(w)`-scaled unitary map, so the frame operator is diagonal in
-/// frequency: `D[k] = sum_{b covers k} W_b[k]^2 / w_b`. The least-squares
-/// inverse is then `X[k] = sum_b FFT(c_b)[k] * W_b[k] / (w_b * D[k])`; this
-/// returns the dual screen `W_b / (w_b * D)` of each band. For a disjoint cover
-/// it reduces to `1 / W_b`, the plain per-band inverse.
+/// Band `b` stores `c_b = IFFT_w(W_b * X_slice)` (normalised inverse FFT), so
+/// `FFT(c_b) = W_b * X` on its bins: each covering band gives its own estimate
+/// of `X[k]`. Measured in energy-preserving units (`sqrt(w_b) * c_b`, a unitary
+/// map of the band's bins), the frame operator is diagonal in frequency,
+/// `D[k] = sum_{b covers k} W_b[k]^2`, and the least-squares inverse blends the
+/// estimates by window power alone: `X[k] = sum_b FFT(c_b)[k] * W_b[k] / D[k]`.
+/// This is the best blend when coefficient errors are white in signal energy
+/// (e.g. from white noise in the signal), which leaves every band's estimate
+/// equally noisy whatever its width. Returns the dual screen `W_b / D` of each
+/// band; for a disjoint cover it reduces to `1 / W_b`, the plain per-band
+/// inverse.
 fn dual_screens(scheme: &Scheme, spectrum_len: usize) -> Vec<Vec<f64>> {
     let mut diag = vec![0.0f64; spectrum_len];
     for (band, window) in scheme.bands.iter().zip(scheme.windows.iter()) {
-        let inv = 1.0 / band.width() as f64;
         for (d, &sc) in diag[band.src_lo..band.src_hi]
             .iter_mut()
             .zip(window.screen.iter())
         {
-            *d += sc * sc * inv;
+            *d += sc * sc;
         }
     }
     scheme
@@ -529,12 +536,11 @@ fn dual_screens(scheme: &Scheme, spectrum_len: usize) -> Vec<Vec<f64>> {
         .iter()
         .zip(scheme.windows.iter())
         .map(|(band, window)| {
-            let inv = 1.0 / band.width() as f64;
             window
                 .screen
                 .iter()
                 .zip(diag[band.src_lo..band.src_hi].iter())
-                .map(|(&sc, &d)| sc * inv / d)
+                .map(|(&sc, &d)| sc / d)
                 .collect()
         })
         .collect()

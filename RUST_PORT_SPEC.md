@@ -591,10 +591,13 @@ Use `proptest` for invariants and standard `#[test]` for parity/numerics.
 **Round-trip:**
 - `dyadic_real.inverse(forward(x)) ≈ x` to ~1e-12 (lossless scheme is invertible).
 - `dyadic_dual_real` is an overcomplete frame (overlapping tilings), inverted by the
-  least-squares (canonical dual) frame inverse. Each band is a `1/√w`-scaled unitary map of
-  its bins, so the frame operator is diagonal: `D[k] = Σ_b w_b[k]² / width_b > 0`, and
-  `X[k] = Σ_b FFT(c_b)[k] · w_b[k] / (width_b · D[k])`. Exact for `forward(x)` (~1e-12); for
-  edited coefficients it returns the least-squares signal (residual orthogonal to the range).
+  least-squares frame inverse in signal energy. Each band's energy-normalised coefficients
+  (`√width_b · c_b`) are a unitary map of its bins, so the frame operator is diagonal:
+  `D[k] = Σ_b w_b[k]² > 0`, and `X[k] = Σ_b FFT(c_b)[k] · w_b[k] / D[k]` (overlapping bands
+  blended by window power alone). Exact for `forward(x)` (~1e-12); for edited coefficients it
+  returns the least-squares signal in that energy metric (residual orthogonal to the range
+  under the width-weighted inner product), the best blend when errors are white in signal
+  energy.
 
 **Functional win (the point of the new scheme):**
 - **Band-edge tone test:** synthesise pure tones at A's octave boundaries (the dead zones,
