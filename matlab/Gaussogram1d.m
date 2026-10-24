@@ -4,7 +4,7 @@ classdef Gaussogram1d < handle
 %   eng = GAUSSOGRAM1D(n, 'scheme', s, 'window', w, 'nyquist_flat_top', tf, ...
 %                      'bands_per_octave', b)
 %   coeffs = eng.forward(signal)
-%   signal = eng.inverse(coeffs)          % 'dyadic_real' engines
+%   signal = eng.inverse(coeffs)          % real-scheme engines
 %
 %   Like the function GAUSSOGRAM, but the engine (and its FFT plans) is built
 %   once at construction and reused across calls — prefer this in tight loops or
@@ -18,8 +18,10 @@ classdef Gaussogram1d < handle
 %   setenv('RAYON_NUM_THREADS', '1') before the first transform to avoid
 %   oversubscription). Signals are real for the real schemes and real or
 %   complex for 'dyadic_complex'. inverse() reconstructs the length-N real
-%   signal from a coefficient vector; it is available for 'dyadic_real'
-%   engines (see the invertible property). The handle is freed automatically
+%   signal from a coefficient vector: exact for 'dyadic_real', the
+%   least-squares frame inverse for 'dyadic_dual_real' (see
+%   GAUSSOGRAM_INVERSE_REAL); 'dyadic_complex' engines are not invertible
+%   (see the invertible property). The handle is freed automatically
 %   when the object is cleared or goes out of scope; you may also call
 %   delete(eng) explicitly.
 %
@@ -39,7 +41,7 @@ classdef Gaussogram1d < handle
         window             % window name (char)
         nyquist_flat_top   % logical
         bands_per_octave   % sub-bands per dyadic octave (power of two)
-        invertible         % logical: inverse() is available ('dyadic_real')
+        invertible         % logical: inverse() is available (real schemes)
     end
 
     properties (Access = private, Transient)
@@ -76,9 +78,7 @@ classdef Gaussogram1d < handle
             obj.window = lower(opts.window);
             obj.nyquist_flat_top = opts.nyquist_flat_top;
             obj.bands_per_octave = opts.bands_per_octave;
-            % The core also inverts dyadic_dual_real (frame inverse); that
-            % path is not wired into MATLAB yet.
-            obj.invertible = strcmp(obj.scheme, 'dyadic_real');
+            obj.invertible = ~strcmp(obj.scheme, 'dyadic_complex');
             obj.output_len = obj.create_engine();
         end
 
@@ -103,7 +103,7 @@ classdef Gaussogram1d < handle
         %   engine's scheme and options. Returns an N x 1 column vector.
             if ~obj.invertible
                 error('gaussogram:notInvertible', ...
-                    "inverse is available for 'dyadic_real' engines only (got '%s').", ...
+                    "'%s' is not invertible.", ...
                     obj.scheme);
             end
             obj.ensure_engine();

@@ -10,8 +10,9 @@ function coeffs = gaussogram(signal, varargin)
 %              are transformed in parallel via the Rust core's batch path).
 %              Real for the real schemes; real or complex for 'dyadic_complex'.
 %   Name-value options:
-%     'scheme'           - 'dyadic_dual_real' (default, N-1 coeffs),
-%                          'dyadic_real' (invertible, N/2+1 coeffs), or
+%     'scheme'           - 'dyadic_dual_real' (default, N-1 coeffs,
+%                          least-squares frame inverse),
+%                          'dyadic_real' (exactly invertible, N/2+1 coeffs), or
 %                          'dyadic_complex' (complex input, N coeffs; the port
 %                          of the legacy complex transform, Python gft1d).
 %     'window'           - 'gaussian' (default) or 'box'.

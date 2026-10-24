@@ -32,6 +32,9 @@ passed = passed + run_case(@t_bpo_handle_matches_function);
 passed = passed + run_case(@t_bpo_rejects_invalid);
 passed = passed + run_case(@t_bpo_to_grid);
 passed = passed + run_case(@t_handle_inverse);
+passed = passed + run_case(@t_dual_inverse_roundtrip);
+passed = passed + run_case(@t_inverse_validation);
+passed = passed + run_case(@t_dual_inverse_match_python);
 passed = passed + run_case(@t_geometry_fields);
 passed = passed + run_case(@t_adjacency_structure);
 passed = passed + run_case(@t_adjacency_circular_wrap);
@@ -545,16 +548,105 @@ for bpo = [1, 2]
     assert_true(threw, 'a wrong-length inverse should be rejected');
     delete(eng);
 end
-eng = Gaussogram1d(n);
-assert_true(~eng.invertible, 'dual engine inverse is not wired into MATLAB');
+eng = Gaussogram1d(n, 'scheme', 'dyadic_complex');
+assert_true(~eng.invertible, 'dyadic_complex engine should not be invertible');
 threw = false;
 try
     eng.inverse(eng.forward(sig));
 catch err
     threw = strcmp(err.identifier, 'gaussogram:notInvertible');
 end
-assert_true(threw, 'dual engine inverse should be rejected clearly');
+assert_true(threw, 'dyadic_complex engine inverse should be rejected clearly');
 delete(eng);
+end
+
+function t_dual_inverse_roundtrip()
+n = 256;
+rng(24);
+sig = randn(n, 1);
+% The default pair: forward is dyadic_dual_real, inverse infers it from N-1.
+rec = gaussogram_inverse_real(gaussogram(sig));
+assert_true(iscolumn(rec) && numel(rec) == n, 'default inverse should return N x 1');
+assert_true(max(abs(rec - sig)) < 1e-10, 'default forward/inverse pair should round trip');
+for bpo = [1, 4]
+    for flat = [false, true]
+        opts = {'bands_per_octave', bpo, 'nyquist_flat_top', flat};
+        label = sprintf('bpo=%d flat=%d', bpo, flat);
+        c = gaussogram(sig, opts{:});
+        explicit = gaussogram_inverse_real(c, 'scheme', 'dyadic_dual_real', opts{:});
+        inferred = gaussogram_inverse_real(c, opts{:});
+        assert_true(max(abs(explicit - sig)) < 1e-10, ['explicit-scheme dual round trip ', label]);
+        assert_true(isequal(inferred, explicit), ['inferred scheme should match explicit ', label]);
+        eng = Gaussogram1d(n, opts{:});
+        assert_true(eng.invertible, 'dual engine should be invertible');
+        from_handle = eng.inverse(eng.forward(sig));
+        assert_true(max(abs(from_handle - sig)) < 1e-10, ['handle dual round trip ', label]);
+        delete(eng);
+    end
+end
+% The inferred dyadic_real path is unchanged.
+c = gaussogram(sig, 'scheme', 'dyadic_real');
+assert_true(max(abs(gaussogram_inverse_real(c) - sig)) < 1e-10, 'inferred dyadic_real');
+end
+
+function t_inverse_validation()
+c = gaussogram(randn(64, 1));   % 63 coeffs: dyadic_dual_real
+cases = { ...
+    {c(1:end - 1), {}, 'gaussogram:coeffsLen'}, ...          % 62: neither 2^k+1 nor 2^k-1
+    {complex(zeros(2, 1)), {}, 'gaussogram:coeffsLen'}, ...  % too short to infer
+    {c, {'scheme', 'dyadic_complex'}, 'gaussogram:notInvertible'}, ...
+    {c(1:33), {'nyquist_flat_top', true}, 'gaussogram:nyquist_flat_top'}, ...  % inferred dyadic_real
+    {c, {'scheme', 'dyadic_real'}, 'gaussogram:create'}, ...  % 63 -> N = 124, not a power of two
+    {c, {'scheme', 'dyadic_wavelet'}, 'gaussogram:scheme'}, ...
+    };
+for i = 1:numel(cases)
+    threw = false;
+    got = '';
+    try
+        gaussogram_inverse_real(cases{i}{1}, cases{i}{2}{:});
+    catch err
+        got = err.identifier;
+        threw = strcmp(got, cases{i}{3});
+    end
+    assert_true(threw, sprintf('inverse case %d should raise %s (got %s)', i, cases{i}{3}, got));
+end
+end
+
+function t_dual_inverse_match_python()
+% The frame inverse of coefficients that are not the transform of any signal
+% returns the least-squares signal, so it depends on the inverse's weighting.
+% Expected values were computed with the Python package on main after #14
+% (gaussogram.inverse_real, energy-weighted least squares); this pins that
+% weighting. Coefficients: c(k) = cos(0.7 k) + 1i sin(0.3 k + 0.1), k = 0..N-2.
+ref = { ...
+    {16, 1, false, [0.23735514131639318, 0.04131866173983578, -0.13381439439620707, ...
+        0.2415513589301889, -0.3526803088842539, 0.16281414011217932, 0.24716389278908463, ...
+        -0.1768259347669025, -0.034712116398329995, -0.19175489583024696, 0.12608176008089794, ...
+        -0.2863765291937198, 0.7995829872325604, -0.3717906272808358, -0.001194022485020249, ...
+        0.6932808870343763]}, ...
+    {32, 2, true, [0.05174457722692837, -0.22370111100675505, 0.047875091655407986, ...
+        0.10866159143377337, 0.1658192266891606, -0.007452396050025657, 0.08335234440377465, ...
+        -0.03647390930554649, -0.02858703105750511, 0.3024781667078925, -0.21473775015694885, ...
+        -0.039120036548101006, 0.23288079375728593, -0.33202577706495956, -0.07044129386873069, ...
+        0.1660871257686367, 0.03685852715217971, -0.023915568595938783, -0.2562243681443899, ...
+        0.13266162443083584, 0.009428192568211383, -0.07027448429841968, 0.308996314495591, ...
+        -0.2351881779357844, -0.10006683447985586, 0.22195777145740292, 0.10658448621818473, ...
+        -0.04314344540914056, 0.006332648864690371, 0.289811799299905, 0.22168750658539085, ...
+        0.1881343952068496]}, ...
+    };
+for r = 1:numel(ref)
+    [n, bpo, flat, expected] = ref{r}{:};
+    k = (0:(n - 2)).';
+    c = cos(0.7 * k) + 1i * sin(0.3 * k + 0.1);
+    opts = {'bands_per_octave', bpo, 'nyquist_flat_top', flat};
+    x = gaussogram_inverse_real(c, opts{:});
+    err = max(abs(x - expected(:)));
+    assert_true(err < 1e-12, sprintf('dual inverse differs from Python (n=%d): %g', n, err));
+    eng = Gaussogram1d(n, opts{:});
+    assert_true(max(abs(eng.inverse(c) - expected(:))) < 1e-12, ...
+        sprintf('handle dual inverse differs from Python (n=%d)', n));
+    delete(eng);
+end
 end
 
 % -- geometry / adjacency --------------------------------------------------

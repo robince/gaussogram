@@ -152,6 +152,7 @@ defaults; outputs are column vectors.
 
 ```matlab
 c = gaussogram(x);                                        % N-1 coeffs (dyadic_dual_real)
+xr = gaussogram_inverse_real(c);                          % frame inverse (scheme from length)
 c = gaussogram(x, 'scheme', 'dyadic_real', 'bands_per_octave', 2);
 xr = gaussogram_inverse_real(c, 'bands_per_octave', 2);   % ~exact
 eng = Gaussogram1d(512, 'scheme', 'dyadic_real');         % reusable engine
@@ -161,10 +162,12 @@ grid = gaussogram_to_grid(c, 512, 'scheme', 'dyadic_real', 'bands_per_octave', 2
 
 - `gaussogram(x, …)` — forward GFT; `x` an N-vector or an `N x count` matrix of
   segments. Real input for the real schemes, complex for `'dyadic_complex'`.
-- `gaussogram_inverse_real(c, …)` — inverse of `dyadic_real`. (The core and
-  C ABI also invert `dyadic_dual_real`; that path is not wired into MATLAB yet.)
+- `gaussogram_inverse_real(c, …)` — inverse of a real scheme: exact for
+  `dyadic_real`, least-squares frame inverse for `dyadic_dual_real`. `'scheme'`
+  defaults to inferring it from the length (`N/2+1` vs `N−1`); `'window'`,
+  `'bands_per_octave'` and `'nyquist_flat_top'` must match the forward call.
 - `Gaussogram1d(n, …)` — reusable engine: `.forward(x)` (vector or batch
-  matrix), `.inverse(c)` for `dyadic_real` engines.
+  matrix), `.inverse(c)` for both real schemes.
 - `gaussogram_scheme_bands`, `gaussogram_output_len`, `gaussogram_partitions`,
   `gaussogram_to_grid` — as in Python.
 - `gaussogram_coefficient_geometry`, `gaussogram_coefficient_adjacency`

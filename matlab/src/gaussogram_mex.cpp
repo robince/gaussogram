@@ -376,22 +376,44 @@ mxArray* inverse_into_output(GaussogramHandle* h, const double* coeffs, size_t c
     return result;
 }
 
-// op = 'inverse_real': (op, coeffs (complex vec, length N/2+1), window_id[, bpo])
-// -> real column vector (length N). Implicitly uses the dyadic_real scheme.
+// op = 'inverse_real':
+// (op, coeffs, window_id[, bpo[, scheme_id[, nyquist_flat_top]]])
+// -> real column vector (length N). scheme_id defaults to dyadic_real
+// (coeffs of length N/2+1); dyadic_dual_real (length N-1) uses the core's
+// least-squares frame inverse. N is recovered from the length per scheme.
 void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
-    require(nrhs == 3 || nrhs == 4, "gaussogram:nrhs",
-            "inverse_real expects (op, coeffs, window_id[, bands_per_octave]).");
+    require(nrhs >= 3 && nrhs <= 6, "gaussogram:nrhs",
+            "inverse_real expects (op, coeffs, window_id[, bands_per_octave[, scheme_id"
+            "[, nyquist_flat_top]]]).");
     std::vector<double> packed;
     size_t clen;
     const double* coeffs = read_coeffs(prhs[1], &packed, &clen);
-    require(clen >= 2, "gaussogram:coeffsLen", "coeffs must have length N/2+1 >= 2.");
     int32_t window_id = scalar_int(prhs[2], "gaussogram:window", "window_id");
     size_t bpo = optional_bpo(nrhs, prhs, 3);
+    int32_t scheme_id = GAUSSOGRAM_SCHEME_DYADIC_REAL;
+    if (nrhs > 4) {
+        scheme_id = scalar_int(prhs[4], "gaussogram:scheme", "scheme_id");
+    }
+    int32_t nyquist = 0;
+    if (nrhs > 5) {
+        nyquist = scalar_int(prhs[5], "gaussogram:nyquist", "nyquist_flat_top");
+    }
 
-    size_t n = (clen - 1) * 2;
+    size_t n = 0;
+    if (scheme_id == GAUSSOGRAM_SCHEME_DYADIC_REAL) {
+        require(clen >= 2, "gaussogram:coeffsLen", "coeffs must have length N/2+1 >= 2.");
+        n = (clen - 1) * 2;
+    } else if (scheme_id == GAUSSOGRAM_SCHEME_DYADIC_DUAL_REAL) {
+        require(clen >= 1, "gaussogram:coeffsLen", "coeffs must have length N-1 >= 1.");
+        n = clen + 1;
+    } else if (scheme_id == GAUSSOGRAM_SCHEME_DYADIC_COMPLEX) {
+        mexErrMsgIdAndTxt("gaussogram:notInvertible", "'dyadic_complex' is not invertible.");
+    } else {
+        mexErrMsgIdAndTxt("gaussogram:scheme", "unknown scheme id %d.", scheme_id);
+    }
 
     Handle h;
-    h.ptr = make_handle(GAUSSOGRAM_SCHEME_DYADIC_REAL, n, window_id, 0, bpo);
+    h.ptr = make_handle(scheme_id, n, window_id, nyquist, bpo);
     plhs[0] = inverse_into_output(h.ptr, coeffs, clen, n, &h);
     (void)nlhs;
 }
