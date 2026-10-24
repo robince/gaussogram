@@ -55,6 +55,15 @@ This is the same instinct behind the production default `dyadic_dual_real`
 (offset bands centred on the joins), and behind the `to_grid(interp_freq="gauss")`
 display mode that confines each band to its effective bandwidth.
 
+The production schemes show the same effect across the whole spectrum
+(`scripts/dead_zone_sweep.py`). Sweeping a unit tone over every bin, the
+best-band window gain of `dyadic_real` drops to about 0.1 at every octave join
+(bands_per_octave = 1). `dyadic_dual_real` stays at about 0.45 or higher (about
+0.8 at bands_per_octave = 2). The only remaining roll-off is at the last bins
+before Nyquist, which is the end of the spectrum, not a join:
+
+![tone response vs frequency, single vs dual tiling](figures/dead_zone_sweep.png)
+
 ---
 
 ## 2. Situating against off-the-shelf transforms
