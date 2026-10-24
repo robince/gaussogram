@@ -50,8 +50,8 @@ is a power of two and every per-band inverse FFT is radix-2.
 
 Both real schemes take a `bands_per_octave` option (a power of two: `1, 2, 4, …`,
 default `1`) that subdivides each dyadic octave into that many frequency
-sub-bands. (Python API only for now — the C ABI / MATLAB layer exposes just
-`bands_per_octave = 1`.) This **rotates the time/frequency trade-off** — finer frequency
+sub-bands (Python, MATLAB, and the C ABI via `gaussogram_create_ex`). This
+**rotates the time/frequency trade-off** — finer frequency
 resolution, coarser time resolution — at a *constant* coefficient count: because
 a band's width is both its frequency extent and its number of time samples,
 splitting an octave conserves the total, so `dyadic_real` stays `N/2 + 1` and
@@ -143,7 +143,40 @@ C = h.forward_batch(np.random.randn(100, 512))   # (100, N/2+1)
   graph to a sparse matrix for cluster-based statistics (MNE/FieldTrip
   permutation clustering, TFCE) or `scipy` connected components.
 
-Inputs are validated strictly (1-D, C-contiguous, exact dtype) — no silent
+### MATLAB API
+
+Run `build_mex` once in `matlab/` (needs cargo and a MEX C++ compiler), then
+add `matlab/` to the path. Options are name-value pairs (`'scheme'`,
+`'window'`, `'nyquist_flat_top'`, `'bands_per_octave'`) with the Python
+defaults; outputs are column vectors.
+
+```matlab
+c = gaussogram(x);                                        % N-1 coeffs (dyadic_dual_real)
+xr = gaussogram_inverse_real(c);                          % frame inverse (scheme from length)
+c = gaussogram(x, 'scheme', 'dyadic_real', 'bands_per_octave', 2);
+xr = gaussogram_inverse_real(c, 'bands_per_octave', 2);   % ~exact
+eng = Gaussogram1d(512, 'scheme', 'dyadic_real');         % reusable engine
+C = eng.forward(X);  xr = eng.inverse(C(:, 1));           % X is N x count
+grid = gaussogram_to_grid(c, 512, 'scheme', 'dyadic_real', 'bands_per_octave', 2);
+```
+
+- `gaussogram(x, …)` — forward GFT; `x` an N-vector or an `N x count` matrix of
+  segments. Real input for the real schemes, complex for `'dyadic_complex'`.
+- `gaussogram_inverse_real(c, …)` — inverse of a real scheme: exact for
+  `dyadic_real`, least-squares frame inverse for `dyadic_dual_real`. `'scheme'`
+  defaults to inferring it from the length (`N/2+1` vs `N−1`); `'window'`,
+  `'bands_per_octave'` and `'nyquist_flat_top'` must match the forward call.
+- `Gaussogram1d(n, …)` — reusable engine: `.forward(x)` (vector or batch
+  matrix), `.inverse(c)` for both real schemes.
+- `gaussogram_scheme_bands`, `gaussogram_output_len`, `gaussogram_partitions`,
+  `gaussogram_to_grid` — as in Python.
+- `gaussogram_coefficient_geometry`, `gaussogram_coefficient_adjacency`
+  (`'circular'`, default false), `gaussogram_to_sparse_adjacency` — the Python
+  geometry / graph helpers, returning structs and a MATLAB `sparse` matrix.
+  Edge and band indices are **1-based** (Python's + 1); `edge_type`, `tiling`,
+  `sub` and `level` keep the Python values.
+
+Python inputs are validated strictly (1-D, C-contiguous, exact dtype) — no silent
 copies/casts. Built engines (windows + FFT plans) are cached process-wide (a few
 recent configurations), so repeated free-function calls do not rebuild them.
 
