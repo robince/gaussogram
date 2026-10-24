@@ -153,13 +153,24 @@ fn create_ex_bands_per_octave_matches_core() {
 #[test]
 fn create_ex_rejects_bad_options() {
     let mut h: *mut GaussogramHandle = ptr::null_mut();
-    for bpo in [0usize, 3, 6] {
-        assert_eq!(
-            unsafe { gaussogram_create_ex(1, 64, 0, 0, bpo, &mut h) },
-            STATUS_BANDS_PER_OCTAVE
-        );
+    // An invalid value is STATUS_BANDS_PER_OCTAVE for every scheme, including
+    // dyadic_complex (which supports only 1), and with an unsupported
+    // nyquist_flat_top too: validity is checked before scheme support.
+    for scheme_id in [0, 1, 2] {
+        for bpo in [0usize, 3, 6] {
+            assert_eq!(
+                unsafe { gaussogram_create_ex(scheme_id, 64, 0, 0, bpo, &mut h) },
+                STATUS_BANDS_PER_OCTAVE,
+                "scheme_id={scheme_id} bpo={bpo}"
+            );
+        }
     }
-    // dyadic_complex has no sub-octave variant.
+    assert_eq!(
+        unsafe { gaussogram_create_ex(2, 64, 0, 1, 3, &mut h) },
+        STATUS_BANDS_PER_OCTAVE
+    );
+    // A valid value dyadic_complex does not support: it has no sub-octave
+    // variant.
     assert_eq!(
         unsafe { gaussogram_create_ex(2, 64, 0, 0, 2, &mut h) },
         gaussogram_core::STATUS_UNSUPPORTED_OPTION

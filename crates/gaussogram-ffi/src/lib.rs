@@ -53,6 +53,13 @@ fn engine_from_id(
         2 => SchemeKind::DyadicComplex,
         _ => return Err(STATUS_UNKNOWN_SCHEME),
     };
+    // An invalid bands_per_octave (not a power of two >= 1) is reported as
+    // such for every scheme, before the per-scheme support checks below, so
+    // STATUS_UNSUPPORTED_OPTION only ever means a valid value the scheme
+    // does not support.
+    if !bands_per_octave.is_power_of_two() {
+        return Err(STATUS_BANDS_PER_OCTAVE);
+    }
     // Reject options the scheme does not support instead of silently
     // ignoring them.
     if nyquist_flat_top && kind != SchemeKind::DyadicDualReal {
@@ -61,7 +68,6 @@ fn engine_from_id(
     if bands_per_octave != 1 && kind == SchemeKind::DyadicComplex {
         return Err(STATUS_UNSUPPORTED_OPTION);
     }
-    // The core validates bands_per_octave (a power of two >= 1).
     cached_engine(SchemeSpec {
         kind,
         n,
