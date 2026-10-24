@@ -21,7 +21,7 @@
       "maturin": "1.15.0"
     },
     "git_commit": "de35701f1ce57823598acfc76f79592c42253d25",
-    "git_status": "M README.md\n M pyproject.toml\n M uv.lock\n?? benchmarks/\n?? \"paper/gft/Brown et al. - A General Description of Linear Time-Frequency Tra.pdf\"\n?? reports/benchmarks/",
+    "git_status": "M README.md\n M pyproject.toml\n M uv.lock\n?? benchmarks/\n?? reports/benchmarks/",
     "thread_environment": {
       "OMP_NUM_THREADS": "1",
       "OPENBLAS_NUM_THREADS": "1",
