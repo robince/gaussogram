@@ -50,7 +50,8 @@ const char* status_message(int32_t status) {
         case GAUSSOGRAM_STATUS_UNKNOWN_SCHEME:
             return "unknown scheme id";
         case GAUSSOGRAM_STATUS_UNSUPPORTED_OPTION:
-            return "option not supported by this scheme (nyquist_flat_top needs dyadic_dual_real)";
+            return "option not supported by this scheme (nyquist_flat_top needs "
+                   "dyadic_dual_real; bands_per_octave > 1 needs a real scheme)";
         case GAUSSOGRAM_STATUS_INTERNAL:
             return "internal error";
         default:
@@ -87,12 +88,6 @@ size_t scalar_size(const mxArray* arg, const char* id, const char* name) {
     return static_cast<size_t>(v);
 }
 
-void require_real_double(const mxArray* arg, const char* id, const char* name) {
-    if (!mxIsDouble(arg) || mxIsComplex(arg) || mxIsSparse(arg)) {
-        mexErrMsgIdAndTxt(id, "%s must be a real full double array.", name);
-    }
-}
-
 // Handle wrapper centralising cleanup. mexErrMsgIdAndTxt may longjmp and skip
 // destructors (C Matrix API), so every error path with a live owned handle
 // must call reset() explicitly BEFORE raising; the destructor only covers the
@@ -110,9 +105,10 @@ struct Handle {
     }
 };
 
-GaussogramHandle* make_handle(int32_t scheme_id, size_t n, int32_t window_id, int32_t nyquist) {
+GaussogramHandle* make_handle(int32_t scheme_id, size_t n, int32_t window_id, int32_t nyquist,
+                              size_t bpo) {
     GaussogramHandle* h = nullptr;
-    int32_t st = gaussogram_create(scheme_id, n, window_id, nyquist, &h);
+    int32_t st = gaussogram_create_ex(scheme_id, n, window_id, nyquist, bpo, &h);
     if (st != GAUSSOGRAM_STATUS_OK || h == nullptr) {
         mexErrMsgIdAndTxt(
             "gaussogram:create",
@@ -122,7 +118,16 @@ GaussogramHandle* make_handle(int32_t scheme_id, size_t n, int32_t window_id, in
     return h;
 }
 
-// Interpret a real double signal matrix as either a single segment (vector) or
+// Optional trailing bands_per_octave argument at prhs[idx] (default 1), so the
+// ops stay callable without it.
+size_t optional_bpo(int nrhs, const mxArray* prhs[], int idx) {
+    if (nrhs <= idx) {
+        return 1;
+    }
+    return scalar_size(prhs[idx], "gaussogram:bands_per_octave", "bands_per_octave");
+}
+
+// Interpret a double signal matrix as either a single segment (vector) or
 // a batch (n x count matrix), writing the inferred dimensions to *n / *count.
 void infer_segments(const mxArray* sig_in, size_t* n, size_t* count) {
     size_t rows = static_cast<size_t>(mxGetM(sig_in));
@@ -139,10 +144,16 @@ void infer_segments(const mxArray* sig_in, size_t* n, size_t* count) {
 
 // Run a forward transform through an existing engine into a freshly allocated
 // complex output (output_len x count); errors via mexErr on a non-OK status.
+// A real signal takes the real path (batched across columns); a complex one
+// takes the complex path (dyadic_complex engines only; the C ABI reports the
+// wrong input kind otherwise), one column at a time.
 // `owned` (nullable) is destroyed before raising so a longjmp cannot leak it;
 // pass nullptr for persistent handles that must outlive the error.
 mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in, Handle* owned) {
-    require_real_double(sig_in, "gaussogram:sigType", "signal");
+    if (!mxIsDouble(sig_in) || mxIsSparse(sig_in)) {
+        if (owned) owned->reset();
+        mexErrMsgIdAndTxt("gaussogram:sigType", "signal must be a full double array.");
+    }
     size_t n, count;
     infer_segments(sig_in, &n, &count);
     size_t olen = gaussogram_output_len(h);
@@ -150,13 +161,17 @@ mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in, Handle*
     // Uninitialised: the transform overwrites every element (no zero-fill pass).
     mxArray* result = mxCreateUninitNumericMatrix(olen, count, mxDOUBLE_CLASS, mxCOMPLEX);
     double* out = reinterpret_cast<double*>(mxGetComplexDoubles(result));
-    const double* sig = mxGetDoubles(sig_in);
 
-    int32_t st;
-    if (count == 1) {
-        st = gaussogram_forward_real(h, sig, n, out, olen);
+    int32_t st = GAUSSOGRAM_STATUS_OK;
+    if (mxIsComplex(sig_in)) {
+        const double* sig = reinterpret_cast<const double*>(mxGetComplexDoubles(sig_in));
+        for (size_t c = 0; c < count && st == GAUSSOGRAM_STATUS_OK; ++c) {
+            st = gaussogram_forward_complex(h, sig + 2 * n * c, n, out + 2 * olen * c, olen);
+        }
+    } else if (count == 1) {
+        st = gaussogram_forward_real(h, mxGetDoubles(sig_in), n, out, olen);
     } else {
-        st = gaussogram_forward_real_batch(h, sig, n, count, out, olen * count);
+        st = gaussogram_forward_real_batch(h, mxGetDoubles(sig_in), n, count, out, olen * count);
     }
     if (st != GAUSSOGRAM_STATUS_OK) {
         mxDestroyArray(result);
@@ -196,38 +211,42 @@ GaussogramHandle* read_handle(const mxArray* arg) {
     return it->second;
 }
 
-// op = 'forward': forward transform of a real signal matrix (n x count;
-// each column is a segment). Returns complex (output_len x count).
+// op = 'forward': forward transform of a signal matrix (n x count; each
+// column is a segment), real for the real schemes, complex for
+// dyadic_complex. Returns complex (output_len x count).
 void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
-    require(nrhs == 5, "gaussogram:nrhs",
-            "forward expects (op, signal, scheme_id, window_id, nyquist_flat_top).");
+    require(nrhs == 5 || nrhs == 6, "gaussogram:nrhs",
+            "forward expects (op, signal, scheme_id, window_id, nyquist_flat_top[, bands_per_octave]).");
     const mxArray* sig_in = prhs[1];
-    require_real_double(sig_in, "gaussogram:sigType", "signal");
+    require(mxIsDouble(sig_in) && !mxIsSparse(sig_in), "gaussogram:sigType",
+            "signal must be a full double array.");
     size_t n, count;
     infer_segments(sig_in, &n, &count);
 
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
     int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    size_t bpo = optional_bpo(nrhs, prhs, 5);
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist);
+    h.ptr = make_handle(scheme_id, n, window_id, nyquist, bpo);
     plhs[0] = forward_into_output(h.ptr, sig_in, &h);
     (void)nlhs;
 }
 
-// op = 'create': build a persistent engine and return its id as a uint64
+// op = 'create' (optional trailing bands_per_octave): build a persistent engine and return its id as a uint64
 // scalar (plhs[0]); optionally its output_len (plhs[1]). mexLock keeps the MEX
 // resident so live handles are not orphaned by `clear`. Pair with 'destroy'.
 void op_create(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
-    require(nrhs == 5, "gaussogram:nrhs",
-            "create expects (op, n, scheme_id, window_id, nyquist_flat_top).");
+    require(nrhs == 5 || nrhs == 6, "gaussogram:nrhs",
+            "create expects (op, n, scheme_id, window_id, nyquist_flat_top[, bands_per_octave]).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
     int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    size_t bpo = optional_bpo(nrhs, prhs, 5);
 
-    GaussogramHandle* h = make_handle(scheme_id, n, window_id, nyquist);
+    GaussogramHandle* h = make_handle(scheme_id, n, window_id, nyquist, bpo);
     uint64_t id = next_handle_id();
     live_handles().emplace(id, h);
     mexLock();
@@ -265,33 +284,35 @@ void op_destroy(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     (void)plhs;
 }
 
-// op = 'output_len': (op, n, scheme_id, window_id, nyquist) -> scalar double.
+// op = 'output_len': (op, n, scheme_id, window_id, nyquist[, bpo]) -> scalar double.
 void op_output_len(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
-    require(nrhs == 5, "gaussogram:nrhs",
-            "output_len expects (op, n, scheme_id, window_id, nyquist_flat_top).");
+    require(nrhs == 5 || nrhs == 6, "gaussogram:nrhs",
+            "output_len expects (op, n, scheme_id, window_id, nyquist_flat_top[, bands_per_octave]).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
     int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    size_t bpo = optional_bpo(nrhs, prhs, 5);
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist);
+    h.ptr = make_handle(scheme_id, n, window_id, nyquist, bpo);
     plhs[0] = mxCreateDoubleScalar(static_cast<double>(gaussogram_output_len(h.ptr)));
     (void)nlhs;
 }
 
-// op = 'scheme_bands': (op, n, scheme_id, window_id, nyquist)
+// op = 'scheme_bands': (op, n, scheme_id, window_id, nyquist[, bpo])
 // -> double matrix (num_bands x 4): columns [src_lo, width, fcentre, out_off].
 void op_scheme_bands(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
-    require(nrhs == 5, "gaussogram:nrhs",
-            "scheme_bands expects (op, n, scheme_id, window_id, nyquist_flat_top).");
+    require(nrhs == 5 || nrhs == 6, "gaussogram:nrhs",
+            "scheme_bands expects (op, n, scheme_id, window_id, nyquist_flat_top[, bands_per_octave]).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
     int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    size_t bpo = optional_bpo(nrhs, prhs, 5);
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist);
+    h.ptr = make_handle(scheme_id, n, window_id, nyquist, bpo);
     int32_t nb = gaussogram_num_bands(h.ptr);
     if (nb <= 0) {
         h.reset();
@@ -318,11 +339,11 @@ void op_scheme_bands(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     (void)nlhs;
 }
 
-// op = 'inverse_real': (op, coeffs (complex vec, length N/2+1), window_id)
-// -> real column vector (length N). Implicitly uses the dyadic_real scheme.
-void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
-    require(nrhs == 3, "gaussogram:nrhs", "inverse_real expects (op, coeffs, window_id).");
-    const mxArray* c_in = prhs[1];
+// Validate a coefficient vector and return an interleaved complex pointer to
+// it, whether MATLAB stored the array as real (imag == 0, repacked into
+// `packed`) or complex. Writes the element count to *clen. Raises before any
+// handle is owned, so no cleanup is needed on error.
+const double* read_coeffs(const mxArray* c_in, std::vector<double>* packed, size_t* clen) {
     require(mxIsDouble(c_in) && !mxIsSparse(c_in), "gaussogram:coeffsType",
             "coeffs must be a full double array.");
     // mxGetN is the product of all trailing dimensions, so reject N-D arrays
@@ -330,37 +351,62 @@ void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     require(mxGetNumberOfDimensions(c_in) == 2 &&
             (mxGetM(c_in) == 1 || mxGetN(c_in) == 1), "gaussogram:coeffsShape",
             "coeffs must be a vector.");
-    size_t clen = static_cast<size_t>(mxGetNumberOfElements(c_in));
+    *clen = static_cast<size_t>(mxGetNumberOfElements(c_in));
+    if (mxIsComplex(c_in)) {
+        return reinterpret_cast<const double*>(mxGetComplexDoubles(c_in));
+    }
+    const double* re = mxGetDoubles(c_in);
+    packed->assign(2 * *clen, 0.0);
+    for (size_t i = 0; i < *clen; ++i) (*packed)[2 * i] = re[i];
+    return packed->data();
+}
+
+// Inverse through an engine into a fresh real column vector of length n.
+// `owned` (nullable) is destroyed before raising, as in forward_into_output.
+mxArray* inverse_into_output(GaussogramHandle* h, const double* coeffs, size_t clen, size_t n,
+                             Handle* owned) {
+    mxArray* result = mxCreateUninitNumericMatrix(n, 1, mxDOUBLE_CLASS, mxREAL);
+    int32_t st = gaussogram_inverse_real(h, coeffs, clen, mxGetDoubles(result), n);
+    if (st != GAUSSOGRAM_STATUS_OK) {
+        mxDestroyArray(result);
+        if (owned) owned->reset();
+        mexErrMsgIdAndTxt("gaussogram:inverse",
+                          "inverse failed with status %d (%s).", st, status_message(st));
+    }
+    return result;
+}
+
+// op = 'inverse_real': (op, coeffs (complex vec, length N/2+1), window_id[, bpo])
+// -> real column vector (length N). Implicitly uses the dyadic_real scheme.
+void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    require(nrhs == 3 || nrhs == 4, "gaussogram:nrhs",
+            "inverse_real expects (op, coeffs, window_id[, bands_per_octave]).");
+    std::vector<double> packed;
+    size_t clen;
+    const double* coeffs = read_coeffs(prhs[1], &packed, &clen);
     require(clen >= 2, "gaussogram:coeffsLen", "coeffs must have length N/2+1 >= 2.");
     int32_t window_id = scalar_int(prhs[2], "gaussogram:window", "window_id");
+    size_t bpo = optional_bpo(nrhs, prhs, 3);
 
     size_t n = (clen - 1) * 2;
 
-    // Get an interleaved complex pointer regardless of whether MATLAB stored the
-    // array as real (imag==0) or complex.
-    std::vector<double> packed;
-    const double* coeffs;
-    if (mxIsComplex(c_in)) {
-        coeffs = reinterpret_cast<const double*>(mxGetComplexDoubles(c_in));
-    } else {
-        const double* re = mxGetDoubles(c_in);
-        packed.resize(2 * clen, 0.0);
-        for (size_t i = 0; i < clen; ++i) packed[2 * i] = re[i];
-        coeffs = packed.data();
-    }
-
     Handle h;
-    h.ptr = make_handle(GAUSSOGRAM_SCHEME_DYADIC_REAL, n, window_id, 0);
+    h.ptr = make_handle(GAUSSOGRAM_SCHEME_DYADIC_REAL, n, window_id, 0, bpo);
+    plhs[0] = inverse_into_output(h.ptr, coeffs, clen, n, &h);
+    (void)nlhs;
+}
 
-    plhs[0] = mxCreateUninitNumericMatrix(n, 1, mxDOUBLE_CLASS, mxREAL);
-    double* out = mxGetDoubles(plhs[0]);
-    int32_t st = gaussogram_inverse_real(h.ptr, coeffs, clen, out, n);
-    if (st != GAUSSOGRAM_STATUS_OK) {
-        mxDestroyArray(plhs[0]);
-        h.reset();
-        mexErrMsgIdAndTxt("gaussogram:inverse",
-                          "inverse_real failed with status %d (%s).", st, status_message(st));
-    }
+// op = 'inverse_handle': (op, handle (uint64), coeffs, n) -> real column
+// vector (length n), through a persistent engine. The engine checks the
+// coefficient length and whether its scheme is invertible.
+void op_inverse_handle(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    require(nrhs == 4, "gaussogram:nrhs", "inverse_handle expects (op, handle, coeffs, n).");
+    GaussogramHandle* h = read_handle(prhs[1]);
+    std::vector<double> packed;
+    size_t clen;
+    const double* coeffs = read_coeffs(prhs[2], &packed, &clen);
+    size_t n = scalar_size(prhs[3], "gaussogram:n", "n");
+    plhs[0] = inverse_into_output(h, coeffs, clen, n, nullptr);  // persistent handle
     (void)nlhs;
 }
 
@@ -408,6 +454,8 @@ extern "C" void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* 
         op_scheme_bands(nlhs, plhs, nrhs, prhs);
     } else if (op == "inverse_real") {
         op_inverse_real(nlhs, plhs, nrhs, prhs);
+    } else if (op == "inverse_handle") {
+        op_inverse_handle(nlhs, plhs, nrhs, prhs);
     } else if (op == "partitions") {
         op_partitions(nlhs, plhs, nrhs, prhs);
     } else {

@@ -2,8 +2,9 @@ function grid = gaussogram_to_grid(coeffs, n, varargin)
 %GAUSSOGRAM_TO_GRID  Render packed GFT coefficients as a time-frequency image.
 %   grid = GAUSSOGRAM_TO_GRID(coeffs, n)
 %   grid = GAUSSOGRAM_TO_GRID(coeffs, n, 'scheme', s, 'window', w, ...
-%                             'nyquist_flat_top', tf, 'interp', i, ...
-%                             'interp_freq', f, 'smooth', sg, ...
+%                             'nyquist_flat_top', tf, 'bands_per_octave', b, ...
+%                             'interp', i, 'interp_freq', f, ...
+%                             'normalize', nm, 'smooth', sg, ...
 %                             'n_freq', nf, 'n_time', nt)
 %
 %   Produces an n_freq x n_time magnitude grid (default (N/2+1) x N):
@@ -14,7 +15,8 @@ function grid = gaussogram_to_grid(coeffs, n, varargin)
 %   positive half-spectrum, so 'dyadic_complex' is rejected. coeffs must be a
 %   vector of exactly the scheme's packed length.
 %
-%   Options (in addition to the shared scheme/window/nyquist_flat_top):
+%   Options (in addition to the shared scheme/window/nyquist_flat_top/
+%   bands_per_octave, which must match the forward transform):
 %     'interp'      - 'linear' (default) piecewise-linear time resampling, or
 %                     'nearest' block/step sampling (raw coefficient cells).
 %     'interp_freq' - 'block' (default) flat-fills each band's resampled row
@@ -39,8 +41,7 @@ function grid = gaussogram_to_grid(coeffs, n, varargin)
 %                     rows than bins, a band narrower than the row spacing may
 %                     cover no row in 'block' / 'gauss' mode.
 %
-%   Mirrors the Python gaussogram.to_grid helper (bands_per_octave is not yet
-%   exposed through the C ABI, so only the bands_per_octave = 1 layout here).
+%   Mirrors the Python gaussogram.to_grid helper.
 %
 %   See also GAUSSOGRAM, GAUSSOGRAM_SCHEME_BANDS.
 
@@ -49,6 +50,7 @@ p.FunctionName = 'gaussogram_to_grid';
 addParameter(p, 'scheme', 'dyadic_dual_real', @(s) ischar(s) || isstring(s));
 addParameter(p, 'window', 'gaussian', @(s) ischar(s) || isstring(s));
 addParameter(p, 'nyquist_flat_top', false, @(t) isscalar(t) && (islogical(t) || isnumeric(t)));
+addParameter(p, 'bands_per_octave', 1);
 addParameter(p, 'interp', 'linear', @(s) ischar(s) || isstring(s));
 addParameter(p, 'interp_freq', 'block', @(s) ischar(s) || isstring(s));
 addParameter(p, 'normalize', 'none', @(s) ischar(s) || isstring(s));
@@ -81,7 +83,8 @@ end
 
 bands = gaussogram_scheme_bands(n, ...
     'scheme', p.Results.scheme, 'window', p.Results.window, ...
-    'nyquist_flat_top', p.Results.nyquist_flat_top);
+    'nyquist_flat_top', p.Results.nyquist_flat_top, ...
+    'bands_per_octave', p.Results.bands_per_octave);
 expected = max(bands.out_off + bands.width);
 if ~isvector(coeffs) || numel(coeffs) ~= expected
     error('gaussogram:coeffsLen', ...
