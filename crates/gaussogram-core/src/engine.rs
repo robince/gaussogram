@@ -516,9 +516,13 @@ impl Gaussogram1d {
 /// map of the band's bins), the frame operator is diagonal in frequency,
 /// `D[k] = sum_{b covers k} W_b[k]^2`, and the least-squares inverse blends the
 /// estimates by window power alone: `X[k] = sum_b FFT(c_b)[k] * W_b[k] / D[k]`.
-/// This is the best blend when coefficient errors are white in signal energy
-/// (e.g. from white noise in the signal), which leaves every band's estimate
-/// equally noisy whatever its width. Returns the dual screen `W_b / D` of each
+/// This is the best blend for independent errors on the stored coefficients
+/// with variance proportional to `1/width` (equal variance per
+/// energy-normalised coefficient), which leave every band's estimate equally
+/// noisy whatever its width. Errors that are consistent with the transform,
+/// such as noise added to the signal before the forward transform, are
+/// recovered identically by any exact inverse, so the blend does not affect
+/// them. Returns the dual screen `W_b / D` of each
 /// band; for a disjoint cover it reduces to `1 / W_b`, the plain per-band
 /// inverse.
 fn dual_screens(scheme: &Scheme, spectrum_len: usize) -> Vec<Vec<f64>> {

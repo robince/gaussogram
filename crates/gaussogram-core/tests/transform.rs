@@ -366,15 +366,16 @@ fn reference_frame_inverse(
 }
 
 #[test]
-fn dual_inverse_energy_weighting_beats_stored_weighting_for_white_noise() {
-    // Coefficient errors that are white in signal energy (each band's stored
-    // coefficients perturbed independently with variance proportional to
-    // 1/width, as white signal noise produces) leave every band's estimate of
-    // a bin equally noisy, so blending by window power alone (the engine) must
-    // beat the stored-coefficient least squares that also divides each band's
-    // weight by its width. The gain is small (about 0.02-0.04 dB overall, up
-    // to ~0.5 dB at individual overlap bins), so the check is strict ordering
-    // on fixed seeds rather than a margin.
+fn dual_inverse_energy_weighting_beats_stored_weighting_for_independent_noise() {
+    // Independent errors on the stored coefficients with variance proportional
+    // to 1/width (equal variance per energy-normalised coefficient) leave
+    // every band's estimate of a bin equally noisy, so blending by window
+    // power alone (the engine) must beat the stored-coefficient least squares
+    // that also divides each band's weight by its width. (Noise added to the
+    // signal before `forward` would not test this: it is consistent across
+    // bands and every exact inverse recovers it.) The gain is small (about
+    // 0.02-0.04 dB overall, up to ~0.5 dB at individual overlap bins), so the
+    // check is strict ordering on fixed seeds rather than a margin.
     for &bpo in &[1usize, 4] {
         let n = 1024;
         let engine = build(dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap());
@@ -405,7 +406,7 @@ fn dual_inverse_energy_weighting_beats_stored_weighting_for_white_noise() {
             err_stored += sq(&x_stored);
         }
         let gain_db = 10.0 * (err_stored / err_energy).log10();
-        eprintln!("bpo={bpo}: energy weighting improves white-noise error by {gain_db:.2} dB");
+        eprintln!("bpo={bpo}: energy weighting improves independent-noise error by {gain_db:.2} dB");
         assert!(
             err_energy < err_stored,
             "bpo={bpo}: energy-weighted error {err_energy} not below stored-weighted {err_stored}"
