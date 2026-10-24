@@ -444,3 +444,45 @@ def test_bands_per_octave_one_matches_default_layout():
         np.testing.assert_array_equal(a.src_lo, b.src_lo)
         np.testing.assert_array_equal(a.width, b.width)
         np.testing.assert_array_equal(a.fcentre, b.fcentre)
+
+
+# ---- to_grid output resolution and memory -----------------------------------
+
+
+@pytest.mark.parametrize("interp", ["linear", "nearest"])
+@pytest.mark.parametrize("interp_freq", ["block", "linear", "gauss"])
+def test_to_grid_decimated_shape_matches_full_grid_subsample(interp, interp_freq):
+    # Rows at 0, 2, 4, ... bins and columns at 0, 2, 4, ... samples are exactly
+    # the even rows/columns of the full-resolution render.
+    n = 256
+    c = g.gft1d_real(np.random.default_rng(6).standard_normal(n), bands_per_octave=2)
+    kw = dict(interp=interp, interp_freq=interp_freq, bands_per_octave=2)
+    full = g.to_grid(c, n, **kw)
+    assert full.shape == (n // 2 + 1, n)
+    np.testing.assert_array_equal(g.to_grid(c, n, n_freq=n // 2 + 1, n_time=n, **kw), full)
+    small = g.to_grid(c, n, n_freq=n // 4 + 1, n_time=n // 2, **kw)
+    np.testing.assert_array_equal(small, full[::2, ::2])
+
+
+def test_to_grid_rejects_degenerate_shape():
+    n = 64
+    c = g.gft1d_real(np.ones(n))
+    with pytest.raises(ValueError, match="n_freq"):
+        g.to_grid(c, n, n_freq=1)
+
+
+def test_to_grid_peak_memory_stays_near_grid_size():
+    # The nearest-neighbour path once built an (N, width) distance matrix per
+    # band, and the linear-frequency path several full-size temporaries.
+    import tracemalloc
+
+    # Working blocks are a fixed ~8 MB, so use a grid much larger than that.
+    n = 4096
+    c = g.gft1d_real(np.random.default_rng(7).standard_normal(n))
+    grid_bytes = (n // 2 + 1) * n * 8
+    for kw in (dict(interp="nearest"), dict(interp_freq="linear"), dict(smooth=1.0)):
+        tracemalloc.start()
+        g.to_grid(c, n, **kw)
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert peak < 1.5 * grid_bytes, (kw, peak / grid_bytes)

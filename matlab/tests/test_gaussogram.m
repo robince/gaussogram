@@ -14,6 +14,7 @@ passed = passed + run_case(@t_batch_matches_single);
 passed = passed + run_case(@t_roundtrip_dyadic_real);
 passed = passed + run_case(@t_scheme_bands_layout);
 passed = passed + run_case(@t_to_grid_modes);
+passed = passed + run_case(@t_to_grid_output_shape);
 passed = passed + run_case(@t_rejects_complex_input);
 passed = passed + run_case(@t_rejects_non_power_of_two);
 passed = passed + run_case(@t_handle_matches_function);
@@ -193,4 +194,29 @@ catch
 end
 assert_true(threw, 'engine should reject a wrong-length signal');
 delete(eng);
+end
+
+function t_to_grid_output_shape()
+% Rows at 0, 2, 4, ... bins and columns at 0, 2, 4, ... samples are exactly
+% the even rows/columns of the full-resolution render.
+n = 256;
+rng(11);
+c = gaussogram(randn(n, 1));
+for interp = {'linear', 'nearest'}
+    for f = {'block', 'linear', 'gauss'}
+        args = {'interp', interp{1}, 'interp_freq', f{1}};
+        full = gaussogram_to_grid(c, n, args{:});
+        assert_true(isequal(size(full), [n / 2 + 1, n]), 'default grid should be (N/2+1) x N');
+        small = gaussogram_to_grid(c, n, args{:}, 'n_freq', n / 4 + 1, 'n_time', n / 2);
+        assert_true(isequal(small, full(1:2:end, 1:2:end)), ...
+            sprintf('decimated %s/%s grid should subsample the full grid', interp{1}, f{1}));
+    end
+end
+threw = false;
+try
+    gaussogram_to_grid(c, n, 'n_freq', 1);
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:shape');
+end
+assert_true(threw, 'n_freq < 2 should be rejected');
 end

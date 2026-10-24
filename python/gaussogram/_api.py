@@ -162,62 +162,90 @@ def output_len(
     )
 
 
-def _blur_axis(a: NDArray[np.float64], sigma: float, axis: int) -> NDArray[np.float64]:
-    """Edge-padded 1-D Gaussian convolution along one axis (numpy-only)."""
-    radius = max(1, int(round(3.0 * sigma)))
+#: Target number of float64 elements in a working block of ``to_grid`` / the
+#: blur (~8 MB), bounding temporaries independently of the grid size.
+_BLOCK_ELEMS = 1 << 20
+
+
+def _blur_axis_(a: NDArray[np.float64], sigma: float, axis: int) -> NDArray[np.float64]:
+    """In place: edge-padded 1-D Gaussian convolution along one axis of a
+    writable 2-D float64 array.
+
+    Vectorised as a weighted sum of shifted slices, processed in blocks along
+    the other axis: each block is copied (padded) before being overwritten, so
+    only block-sized temporaries are needed. The kernel is symmetric, so this
+    equals ``np.convolve(..., mode="valid")`` on the edge-padded data.
+    """
+    # Round half up (not Python's half-to-even) to match MATLAB's round().
+    radius = max(1, int(np.floor(3.0 * sigma + 0.5)))
     x = np.arange(-radius, radius + 1, dtype=np.float64)
     kernel = np.exp(-(x**2) / (2.0 * sigma**2))
     kernel /= kernel.sum()
 
-    def conv1d(m: NDArray[np.float64]) -> NDArray[np.float64]:
-        padded = np.pad(m, (radius, radius), mode="edge")
-        return np.convolve(padded, kernel, mode="valid")
+    m = np.moveaxis(a, axis, 0)          # blur along axis 0 of this view
+    length, other = m.shape
+    step = max(1, _BLOCK_ELEMS // max(1, length + 2 * radius))
+    for c0 in range(0, other, step):
+        c1 = min(c0 + step, other)
+        padded = np.pad(m[:, c0:c1], ((radius, radius), (0, 0)), mode="edge")
+        acc = m[:, c0:c1]
+        np.multiply(padded[0:length], kernel[0], out=acc)
+        tmp = np.empty_like(acc)
+        for k in range(1, len(kernel)):
+            np.multiply(padded[k : k + length], kernel[k], out=tmp)
+            acc += tmp
+    return a
 
-    return np.apply_along_axis(conv1d, axis, a)
 
-
-def _gaussian_blur(grid: NDArray[np.float64], sigma) -> NDArray[np.float64]:
-    """Separable Gaussian blur. ``sigma`` is a scalar (both axes) or a
-    ``(sigma_freq, sigma_time)`` pair, in grid cells."""
+def _gaussian_blur_(grid: NDArray[np.float64], sigma) -> NDArray[np.float64]:
+    """Separable Gaussian blur, in place. ``sigma`` is a scalar (both axes) or
+    a ``(sigma_freq, sigma_time)`` pair, in grid cells."""
     if np.isscalar(sigma):
         sf = st = float(sigma)
     else:
         sf, st = float(sigma[0]), float(sigma[1])
-    out = grid
     if sf > 0:
-        out = _blur_axis(out, sf, axis=0)
+        _blur_axis_(grid, sf, axis=0)
     if st > 0:
-        out = _blur_axis(out, st, axis=1)
-    return out
+        _blur_axis_(grid, st, axis=1)
+    return grid
 
 
 def _interp_freq_grid(
     node_freqs: NDArray[np.float64],
     node_profiles: NDArray[np.float64],
-    nfreq: int,
+    row_freqs: NDArray[np.float64],
 ) -> NDArray[np.float64]:
     """Linearly interpolate band-centre profiles across the frequency axis.
 
-    ``node_profiles`` is ``(M, N)``: one time-row per band, anchored at the
+    ``node_profiles`` is ``(M, T)``: one time-row per band, anchored at the
     band's centre frequency ``node_freqs`` (length ``M``, sorted ascending). For
-    each output row ``r`` in ``[0, nfreq)`` we interpolate, column by column,
-    between the two band centres that bracket ``r``. Rows outside the centre
-    range are clamped to the nearest band (the np.interp endpoint convention).
+    each output row (at frequency ``row_freqs[r]``, in bins) we interpolate,
+    column by column, between the two band centres that bracket it. Rows
+    outside the centre range are clamped to the nearest band (the np.interp
+    endpoint convention). Rows are filled in blocks to bound temporaries.
     """
-    x = np.arange(nfreq, dtype=np.float64)
+    x = np.asarray(row_freqs, dtype=np.float64)
+    nrows = x.shape[0]
     xp = node_freqs.astype(np.float64)
     m = xp.shape[0]
     if m == 1:
-        return np.repeat(node_profiles, nfreq, axis=0)
+        return np.repeat(node_profiles, nrows, axis=0)
     idx = np.clip(np.searchsorted(xp, x, side="right") - 1, 0, m - 2)
     x0 = xp[idx]
     x1 = xp[idx + 1]
     denom = x1 - x0
-    w = np.where(denom > 0, (x - x0) / denom, 0.0)
+    w = np.where(denom > 0, (x - x0) / np.where(denom > 0, denom, 1.0), 0.0)
     w = np.clip(w, 0.0, 1.0)  # clamp rows below/above the centre range
-    lo_prof = node_profiles[idx]
-    hi_prof = node_profiles[idx + 1]
-    return (1.0 - w)[:, None] * lo_prof + w[:, None] * hi_prof
+    ncols = node_profiles.shape[1]
+    grid = np.empty((nrows, ncols), dtype=np.float64)
+    step = max(1, _BLOCK_ELEMS // max(1, ncols))
+    for r0 in range(0, nrows, step):
+        r1 = min(r0 + step, nrows)
+        blk = grid[r0:r1]
+        np.multiply(node_profiles[idx[r0:r1]], (1.0 - w[r0:r1])[:, None], out=blk)
+        blk += w[r0:r1, None] * node_profiles[idx[r0:r1] + 1]
+    return grid
 
 
 def to_grid(
@@ -231,16 +259,26 @@ def to_grid(
     normalize: str = "none",
     smooth=None,
     bands_per_octave: int = 1,
+    n_freq: int | None = None,
+    n_time: int | None = None,
 ) -> NDArray[np.float64]:
-    """Render packed GFT coefficients onto a ``(N/2+1, N)`` magnitude grid for
-    display: frequency on the vertical axis, time on the horizontal.
+    """Render packed GFT coefficients onto a ``(n_freq, n_time)`` magnitude
+    grid for display: frequency on the vertical axis, time on the horizontal.
+    The default is the full ``(N/2+1, N)`` resolution.
 
     Each band carries ``width`` complex samples spanning the full signal
-    duration. The band magnitude is first resampled to ``N`` time points
+    duration. The band magnitude is first resampled to ``n_time`` time points
     (``interp``), then placed on the frequency axis (``interp_freq``).
 
     Parameters
     ----------
+    n_freq, n_time:
+        Output size. Rows sit at ``n_freq`` evenly spaced frequencies from 0 to
+        ``N/2`` bins (inclusive) and columns at times ``k * N / n_time``
+        samples. The full-resolution grid is ``(N/2+1) * N`` float64 values
+        (16 GiB at N = 2^16), so pass a screen-sized shape for long signals.
+        With fewer rows than bins, a band narrower than the row spacing may
+        cover no row in ``"block"`` / ``"gauss"`` mode.
     interp:
         Time-axis resampling of each band's magnitude:
         ``"linear"`` (default) piecewise-linear interpolation between the band's
@@ -292,7 +330,17 @@ def to_grid(
             f"packs {expected} coefficients; check n and scheme match the "
             f"forward transform"
         )
-    nfreq = n // 2 + 1
+    nfreq = n // 2 + 1 if n_freq is None else int(n_freq)
+    ntime = n if n_time is None else int(n_time)
+    if nfreq < 2 or ntime < 1:
+        raise ValueError(f"need n_freq >= 2 and n_time >= 1, got ({nfreq}, {ntime})")
+    # Row frequencies in bins; the default is exactly 0, 1, ..., N/2.
+    row_freqs = np.linspace(0.0, n / 2, nfreq)
+
+    def band_rows(lo: int, hi: int) -> tuple[int, int]:
+        """Rows whose frequency lies in the band's support ``[lo, hi)``."""
+        return (int(np.searchsorted(row_freqs, lo, side="left")),
+                int(np.searchsorted(row_freqs, hi, side="left")))
 
     if interp not in ("linear", "nearest"):
         raise ValueError(f"interp must be 'linear' or 'nearest', got {interp!r}")
@@ -305,10 +353,10 @@ def to_grid(
             f"normalize must be 'none', 'width', or 'energy', got {normalize!r}"
         )
 
-    target_times = np.arange(n)
+    target_times = np.arange(ntime) * (n / ntime)
 
     def band_row(off: int, w: int) -> NDArray[np.float64]:
-        """Time-resample one band's magnitude to all ``N`` columns."""
+        """Time-resample one band's magnitude to the ``n_time`` columns."""
         mag = np.abs(coeffs[off : off + w])
         # |coeff| ∝ 1/width for a fixed-amplitude line; ×width (L1) equalises tone
         # brightness across bands, ×√width (L2) is the energy-preserving middle.
@@ -317,66 +365,75 @@ def to_grid(
         elif normalize == "energy":
             mag = mag * np.sqrt(w)
         if w == 1:
-            return np.full(n, mag[0])
+            return np.full(ntime, mag[0])
         # The unshifted per-band inverse FFT puts sample j at time ``j·n/w``
         # (matching ``coefficient_geometry``). The transform is circular, so
         # resample periodically: the last sample wraps back to sample 0 at t=n.
-        band_times = np.arange(w) * (n / w)
         if interp == "nearest":
-            d = np.abs(target_times[:, None] - band_times[None, :])
-            idx = np.minimum(d, n - d).argmin(axis=1)
-            return mag[idx]
+            # Circularly nearest sample, computed directly rather than via an
+            # (n_time, w) distance matrix. Ties go to the lower index, so the
+            # wrap-around tie between samples w-1 and 0 goes to 0.
+            k = target_times * (w / n)
+            idx = np.ceil(k - 0.5).astype(np.int64)
+            idx[k == w - 0.5] = 0
+            return mag[idx % w]
+        band_times = np.arange(w) * (n / w)
         return np.interp(target_times, band_times, mag, period=n)
 
     if interp_freq == "block":
-        grid = np.zeros((nfreq, n), dtype=np.float64)
+        grid = np.zeros((nfreq, ntime), dtype=np.float64)
         for lo, w, off in zip(layout.src_lo, layout.width, layout.out_off):
             lo, w, off = int(lo), int(w), int(off)
-            if lo >= nfreq:
+            r0, r1 = band_rows(lo, lo + w)
+            if r0 >= r1:
                 continue
             row = band_row(off, w)
-            hi = min(lo + w, nfreq)
-            grid[lo:hi, :] = np.maximum(grid[lo:hi, :], row[None, :])
+            blk = grid[r0:r1]
+            np.maximum(blk, row[None, :], out=blk)
     elif interp_freq == "linear":  # anchor each band at its centre, interpolate
         nodes: dict[int, NDArray[np.float64]] = {}
         for w, off, fc in zip(layout.width, layout.out_off, layout.fcentre):
             w, off, fc = int(w), int(off), int(fc)
-            if fc >= nfreq:
+            if fc > n // 2:
                 continue
             row = band_row(off, w)
             # Two bands can share a centre (e.g. degenerate widths): keep max.
             nodes[fc] = np.maximum(nodes[fc], row) if fc in nodes else row
         node_freqs = np.array(sorted(nodes), dtype=np.float64)
         node_profiles = np.stack([nodes[int(f)] for f in node_freqs])
-        grid = _interp_freq_grid(node_freqs, node_profiles, nfreq)
+        grid = _interp_freq_grid(node_freqs, node_profiles, row_freqs)
     else:  # "gauss": weight each band by its window profile, normalise overlaps
-        grid = np.zeros((nfreq, n), dtype=np.float64)
+        grid = np.zeros((nfreq, ntime), dtype=np.float64)
         weight_sum = np.zeros(nfreq, dtype=np.float64)
+        step = max(1, _BLOCK_ELEMS // ntime)
         for lo, w, off, fc in zip(
             layout.src_lo, layout.width, layout.out_off, layout.fcentre
         ):
             lo, w, off, fc = int(lo), int(w), int(off), int(fc)
-            if lo >= nfreq:
+            r0, r1 = band_rows(lo, lo + w)
+            if r0 >= r1:
                 continue
             row = band_row(off, w)
-            hi = min(lo + w, nfreq)
-            rows = np.arange(lo, hi)
+            rows = row_freqs[r0:r1]
             if w == 1 or fc == 0:
                 # DC / width-1 bands carry no taper: flat over their support.
-                wj = np.ones(hi - lo, dtype=np.float64)
+                wj = np.ones(r1 - r0, dtype=np.float64)
             else:
                 sigma = fc / (2.0 * np.pi)  # freq-domain σ of the band Gaussian
                 wj = np.exp(-((rows - fc) ** 2) / (2.0 * sigma**2))
                 # Mirror the forward transform's Nyquist flat-top on the top band.
-                if nyquist_flat_top and lo + w >= nfreq:
+                if nyquist_flat_top and lo + w >= n // 2 + 1:
                     wj[rows >= fc] = 1.0
-            grid[lo:hi, :] += wj[:, None] * row[None, :]
-            weight_sum[lo:hi] += wj
+            # Accumulate in row blocks so the outer product stays small.
+            for b0 in range(r0, r1, step):
+                b1 = min(b0 + step, r1)
+                grid[b0:b1] += wj[b0 - r0 : b1 - r0, None] * row[None, :]
+            weight_sum[r0:r1] += wj
         weight_sum = np.where(weight_sum > 0.0, weight_sum, 1.0)
         grid /= weight_sum[:, None]
 
     if smooth is not None:
-        grid = _gaussian_blur(grid, smooth)
+        grid = _gaussian_blur_(grid, smooth)  # grid is ours: blur in place
     return grid
 
 
