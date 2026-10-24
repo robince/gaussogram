@@ -74,11 +74,12 @@ write-up (including the invertible `dyadic_real` version).
 
 ## Install & quick start
 
-Build the native extension (needs a Rust toolchain and
-[maturin](https://www.maturin.rs/)):
+Build the native extension into the project environment with
+[uv](https://docs.astral.sh/uv/) (needs a Rust toolchain; uv builds it in
+release mode through the [maturin](https://www.maturin.rs/) build backend):
 
 ```bash
-maturin develop --release
+uv sync --all-extras --reinstall-package gaussogram
 ```
 
 ```python
@@ -215,8 +216,9 @@ python benchmarks/report.py reports/benchmarks/latest/results.json
 ## Tests
 
 ```bash
-cargo test                                  # Rust core
-maturin develop --release && pytest python  # Python
+cargo test                                                # Rust core
+uv sync --all-extras --reinstall-package gaussogram       # rebuild the extension
+uv run --no-sync pytest python                            # Python
 ```
 
 ## License

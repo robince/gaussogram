@@ -3,12 +3,10 @@
 Run from the repository root, using a release-built extension:
 
 ```sh
-uv sync --extra benchmark --extra test
-uv pip install maturin
-# If a conda environment is also active, unset CONDA_PREFIX for maturin.
-uv run maturin develop --release
-uv run python benchmarks/run.py
-uv run python benchmarks/report.py reports/benchmarks/latest/results.json
+# Builds the extension in release mode through the maturin build backend.
+uv sync --all-extras --reinstall-package gaussogram
+uv run --no-sync python benchmarks/run.py
+uv run --no-sync python benchmarks/report.py reports/benchmarks/latest/results.json
 ```
 
 `run.py` has no dependency on the plotting code; `report.py` can regenerate plots
