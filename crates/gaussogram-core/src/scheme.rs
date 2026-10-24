@@ -181,8 +181,8 @@ pub fn dyadic_real_with(
 }
 
 /// `dyadic_dual_real` — the DEFAULT scheme. Tiling A followed by tiling B.
-/// A ~2x redundant frame, invertible by the engine's least-squares (canonical
-/// dual) frame inverse.
+/// A ~2x redundant frame, invertible by the engine's least-squares frame
+/// inverse (least squares in signal energy).
 pub fn dyadic_dual_real(n: usize) -> Result<Scheme, GaussogramError> {
     dyadic_dual_real_with(n, WindowKind::Gaussian, false, 1)
 }
