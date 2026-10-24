@@ -10,6 +10,12 @@ pub const STATUS_WRONG_INPUT_KIND: i32 = 5;
 pub const STATUS_OUTPUT_LEN_MISMATCH: i32 = 6;
 pub const STATUS_INPUT_LEN_MISMATCH: i32 = 7;
 pub const STATUS_BANDS_PER_OCTAVE: i32 = 8;
+/// Used only by the C ABI (`gaussogram-ffi`) for an unrecognized scheme id;
+/// no `GaussogramError` variant maps to it.
+pub const STATUS_UNKNOWN_SCHEME: i32 = 9;
+/// Used only by the C ABI for an option a scheme does not support
+/// (e.g. `nyquist_flat_top` outside `dyadic_dual_real`).
+pub const STATUS_UNSUPPORTED_OPTION: i32 = 10;
 pub const STATUS_INTERNAL: i32 = 99;
 
 #[derive(Error, Debug, PartialEq, Eq)]

@@ -104,10 +104,11 @@ confine energy to a blob. (For compact peaks on the single cover, use
 ## Two caveats worth knowing
 
 **Low-frequency time placement (display).** `to_grid` anchors each band's `width`
-samples at their time-cell **centres** `(j+0.5)·N/width`, matching
-`coefficient_geometry`. This matters for narrow (low-frequency / high-`bpo`) bands:
-an earlier endpoint convention pushed a width-2 band's two samples onto `t=0` and
-`t=N−1`, biasing a centred impulse's energy toward the right edge. The residual
+samples at their true time positions `j·N/width` (where the unshifted per-band
+inverse FFT puts them), matching `coefficient_geometry`, and resamples periodically.
+This matters for narrow (low-frequency / high-`bpo`) bands: an earlier endpoint
+convention pushed a width-2 band's two samples onto `t=0` and `t=N−1`, and a later
+cell-centre convention `(j+0.5)·N/width` shifted every band late by half a cell. The residual
 coarseness that remains at the very lowest bands is genuine — a width-2 band has
 only two time cells spanning the whole record, so it physically cannot localise
 better; `bpo = 4` makes that worse by splitting low octaves into such narrow bands.

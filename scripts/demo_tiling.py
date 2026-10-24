@@ -104,7 +104,7 @@ def draw_tiles(ax, layout, color, label, hatch=None, lw=1.4,
 # halving the frequency resolution (taller rows).
 
 # %%
-layout_real = g.scheme_bands(N, scheme="dyadic_real", nyquist_flat_top=True)
+layout_real = g.scheme_bands(N, scheme="dyadic_real")
 
 fig, ax = plt.subplots(figsize=(9, 5))
 draw_tiles(ax, layout_real, color="tab:blue", label="coefficient tile")

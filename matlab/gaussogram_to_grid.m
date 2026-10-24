@@ -15,13 +15,21 @@ function grid = gaussogram_to_grid(coeffs, n, varargin)
 %                     'nearest' block/step sampling (raw coefficient cells).
 %     'interp_freq' - 'block' (default) flat-fills each band's resampled row
 %                     into every frequency row it covers, overlapping bands
-%                     combined by max; or 'linear' anchors each band at its
+%                     combined by max; 'linear' anchors each band at its
 %                     centre frequency and linearly interpolates between
-%                     adjacent band centres (no horizontal block seams).
+%                     adjacent band centres (no horizontal block seams);
+%                     'gauss' weights each band's row by its Gaussian window
+%                     across frequency and normalises across overlapping bands
+%                     (partition of unity) - confines each band to its
+%                     effective bandwidth (best for dyadic_dual_real).
+%     'normalize'   - 'none' (default) raw |coeff|; 'width' multiplies each
+%                     band by its width (L1, equal-amplitude tones equally
+%                     bright); 'energy' multiplies by sqrt(width) (L2).
 %     'smooth'      - [] (default, off), a scalar Gaussian sigma applied to both
 %                     axes, or a [sigma_freq, sigma_time] pair, in grid cells.
 %
-%   Mirrors the Python gaussogram.to_grid helper.
+%   Mirrors the Python gaussogram.to_grid helper (bands_per_octave is not yet
+%   exposed through the C ABI, so only the bands_per_octave = 1 layout here).
 %
 %   See also GAUSSOGRAM, GAUSSOGRAM_SCHEME_BANDS.
 
@@ -32,6 +40,7 @@ addParameter(p, 'window', 'gaussian', @(s) ischar(s) || isstring(s));
 addParameter(p, 'nyquist_flat_top', false, @(t) isscalar(t) && (islogical(t) || isnumeric(t)));
 addParameter(p, 'interp', 'linear', @(s) ischar(s) || isstring(s));
 addParameter(p, 'interp_freq', 'block', @(s) ischar(s) || isstring(s));
+addParameter(p, 'normalize', 'none', @(s) ischar(s) || isstring(s));
 addParameter(p, 'smooth', [], @(s) isempty(s) || (isnumeric(s) && (isscalar(s) || numel(s) == 2)));
 parse(p, varargin{:});
 
@@ -41,8 +50,13 @@ if ~ismember(interp, {'linear', 'nearest'})
 end
 
 interp_freq = char(lower(string(p.Results.interp_freq)));
-if ~ismember(interp_freq, {'linear', 'block'})
-    error('gaussogram:interp_freq', "interp_freq must be 'linear' or 'block'.");
+if ~ismember(interp_freq, {'linear', 'block', 'gauss'})
+    error('gaussogram:interp_freq', "interp_freq must be 'linear', 'block', or 'gauss'.");
+end
+
+normalize = char(lower(string(p.Results.normalize)));
+if ~ismember(normalize, {'none', 'width', 'energy'})
+    error('gaussogram:normalize', "normalize must be 'none', 'width', or 'energy'.");
 end
 
 coeffs = double(coeffs(:));
@@ -62,12 +76,12 @@ if strcmp(interp_freq, 'block')
         if lo >= nfreq
             continue;
         end
-        row = local_band_row(coeffs, off, w, n, interp, target_times);
+        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times);
         hi = min(lo + w, nfreq);       % exclusive upper, 0-based -> rows lo+1..hi
         rows = (lo + 1):hi;
         grid(rows, :) = max(grid(rows, :), row);
     end
-else  % linear in frequency: anchor each band at its centre, interpolate
+elseif strcmp(interp_freq, 'linear')  % anchor each band at its centre, interpolate
     node_freqs = [];
     node_profiles = zeros(0, n);
     for b = 1:numel(bands.src_lo)
@@ -77,7 +91,7 @@ else  % linear in frequency: anchor each band at its centre, interpolate
         if fc >= nfreq
             continue;
         end
-        row = local_band_row(coeffs, off, w, n, interp, target_times);
+        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times);
         existing = find(node_freqs == fc, 1);
         if isempty(existing)
             node_freqs(end + 1) = fc;             %#ok<AGROW>
@@ -90,6 +104,37 @@ else  % linear in frequency: anchor each band at its centre, interpolate
     [node_freqs, order] = sort(node_freqs);
     node_profiles = node_profiles(order, :);
     grid = local_interp_freq_grid(node_freqs, node_profiles, nfreq);
+else  % 'gauss': weight each band by its window profile, normalise overlaps
+    grid = zeros(nfreq, n);
+    weight_sum = zeros(nfreq, 1);
+    nyquist = logical(p.Results.nyquist_flat_top);
+    for b = 1:numel(bands.src_lo)
+        lo = bands.src_lo(b);          % 0-based
+        w = bands.width(b);
+        off = bands.out_off(b);        % 0-based
+        fc = bands.fcentre(b);
+        if lo >= nfreq
+            continue;
+        end
+        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times);
+        hi = min(lo + w, nfreq);       % exclusive upper, 0-based
+        rows0 = (lo:(hi - 1)).';       % 0-based frequency rows, column
+        if w == 1 || fc == 0
+            % DC / width-1 bands carry no taper: flat over their support.
+            wj = ones(numel(rows0), 1);
+        else
+            sigma = fc / (2.0 * pi);   % freq-domain sigma of the band Gaussian
+            wj = exp(-((rows0 - fc).^2) / (2.0 * sigma^2));
+            % Mirror the forward transform's Nyquist flat-top on the top band.
+            if nyquist && lo + w >= nfreq
+                wj(rows0 >= fc) = 1.0;
+            end
+        end
+        grid(rows0 + 1, :) = grid(rows0 + 1, :) + wj .* row;  % implicit expansion
+        weight_sum(rows0 + 1) = weight_sum(rows0 + 1) + wj;
+    end
+    weight_sum(weight_sum <= 0) = 1.0;
+    grid = grid ./ weight_sum;
 end
 
 if ~isempty(p.Results.smooth)
@@ -97,19 +142,30 @@ if ~isempty(p.Results.smooth)
 end
 end
 
-function row = local_band_row(coeffs, off, w, n, interp, target_times)
+function row = local_band_row(coeffs, off, w, n, interp, normalize, target_times)
 %LOCAL_BAND_ROW  Time-resample one band's magnitude to all N columns.
 mag = abs(coeffs(off + 1 : off + w));   % 1-based slice
+% |coeff| ~ 1/width for a fixed-amplitude line; x width (L1) equalises tone
+% brightness across bands, x sqrt(width) (L2) is the energy-preserving middle.
+if strcmp(normalize, 'width')
+    mag = mag * w;
+elseif strcmp(normalize, 'energy')
+    mag = mag * sqrt(w);
+end
 if w == 1
     row = repmat(mag(1), 1, n);
     return;
 end
-band_times = linspace(0, n - 1, w);
+% The unshifted per-band inverse FFT puts sample j at time j*n/w (matching
+% the Python to_grid and coefficient_geometry). The transform is circular,
+% so resample periodically: the last sample wraps back to sample 0 at t=n.
+band_times = (0:(w - 1)) * (n / w);
 if strcmp(interp, 'nearest')
-    [~, idx] = min(abs(target_times.' - band_times), [], 2);
+    d = abs(target_times.' - band_times);
+    [~, idx] = min(min(d, n - d), [], 2);
     row = mag(idx).';
-else  % linear
-    row = interp1(band_times, mag, target_times, 'linear');
+else  % linear, periodic (matches numpy.interp with period=n)
+    row = interp1([band_times, n], [mag(:).', mag(1)], target_times, 'linear');
 end
 end
 

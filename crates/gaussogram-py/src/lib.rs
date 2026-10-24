@@ -47,10 +47,26 @@ fn build_scheme(
     nyquist_flat_top: bool,
     bands_per_octave: usize,
 ) -> PyResult<Scheme> {
+    // Reject non-default options a scheme does not support rather than
+    // silently ignoring them (a reproducibility hazard).
     let s = match scheme {
         "dyadic_dual_real" => dyadic_dual_real_with(n, kind, nyquist_flat_top, bands_per_octave),
-        "dyadic_real" => dyadic_real_with(n, kind, bands_per_octave),
-        "dyadic_complex" => dyadic_complex_with(n, kind),
+        "dyadic_real" => {
+            if nyquist_flat_top {
+                return Err(PyValueError::new_err(
+                    "nyquist_flat_top is only supported by 'dyadic_dual_real'",
+                ));
+            }
+            dyadic_real_with(n, kind, bands_per_octave)
+        }
+        "dyadic_complex" => {
+            if nyquist_flat_top || bands_per_octave != 1 {
+                return Err(PyValueError::new_err(
+                    "'dyadic_complex' supports neither nyquist_flat_top nor bands_per_octave",
+                ));
+            }
+            dyadic_complex_with(n, kind)
+        }
         other => {
             return Err(PyValueError::new_err(format!(
                 "unknown scheme '{other}' (expected 'dyadic_dual_real', 'dyadic_real', or 'dyadic_complex')"
@@ -62,8 +78,10 @@ fn build_scheme(
 
 /// RAII guard that clears a NumPy array's `WRITEABLE` flag while the GIL is
 /// released for a transform, then restores the original flags on drop. This
-/// turns concurrent Python-side mutation of a borrowed input into a hard error
-/// rather than a silent data race against the Rust reader.
+/// turns concurrent Python-side mutation *through this array object* into a
+/// hard error rather than a silent data race against the Rust reader. It is
+/// best-effort: other views or the base array sharing the same buffer keep
+/// their own flags and can still mutate the data.
 ///
 /// Construct and drop this only while holding the GIL.
 struct WriteableGuard {
@@ -162,6 +180,12 @@ fn inverse_real<'py>(
     let kind = window_kind(window_type)?;
     let arr_ptr = coeffs.as_array_ptr();
     let c = coeffs.as_slice()?;
+    if c.len() < 2 {
+        return Err(PyValueError::new_err(format!(
+            "coeffs must have length N/2 + 1 >= 3 (got {})",
+            c.len()
+        )));
+    }
     // Recover N from output_len = N/2 + 1 (invariant to bands_per_octave).
     let n = (c.len() - 1) * 2;
     let s = build_scheme("dyadic_real", n, kind, false, bands_per_octave)?;

@@ -46,7 +46,8 @@ also available.
 
 Both real schemes take a `bands_per_octave` option (a power of two: `1, 2, 4, …`,
 default `1`) that subdivides each dyadic octave into that many frequency
-sub-bands. This **rotates the time/frequency trade-off** — finer frequency
+sub-bands. (Python API only for now — the C ABI / MATLAB layer exposes just
+`bands_per_octave = 1`.) This **rotates the time/frequency trade-off** — finer frequency
 resolution, coarser time resolution — at a *constant* coefficient count: because
 a band's width is both its frequency extent and its number of time samples,
 splitting an octave conserves the total, so `dyadic_real` stays `N/2 + 1` and
@@ -177,6 +178,18 @@ data change, not new control flow.
 - `golden/` — golden vectors (generated from the reference) for parity tests.
 - `extern/fst-uofc` — the reference library (a local checkout / symlink).
 - `RUST_PORT_SPEC.md` — the porting specification.
+
+## Runtime benchmarks
+
+Compare Gaussogram settings against discrete/continuous wavelets, the full
+standard Stockwell transform, and STFT with reproducible timing and output-size
+reports. Setup, reusable handles, one-shot calls, and optional display costs are
+measured separately. See [benchmark instructions](benchmarks/README.md).
+
+```bash
+python benchmarks/run.py --preset quick
+python benchmarks/report.py reports/benchmarks/latest/results.json
+```
 
 ## Tests
 
