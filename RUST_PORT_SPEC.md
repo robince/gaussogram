@@ -215,7 +215,8 @@ dropped with little effect.
 | A      | `[8,16)`   | 8   | 16  | 8     |                   |
 | A      | `[16,32)`  | 16  | 32  | 16    |                   |
 | A      | `[32,64)`  | 32  | 64  | 32    |                   |
-| A      | `[64,128]` | 64  | 129 | 65    |                   |
+| A      | `[64,128)` | 64  | 128 | 64    |                   |
+| A      | Nyquist `{128}` | 128 | 129 | 1 |                   |
 | **A total** |       |     |     | **129** |                 |
 | B      | `[1,3)`    | 1   | 3   | 2     | b=2               |
 | B      | `[2,6)`    | 2   | 6   | 4     | b=4               |
@@ -294,14 +295,17 @@ in that band's Gaussian taper and are attenuated, as in the C reference (`window
 `gft.c` ~line 301, which fills the top band's window slots with the generated Gaussian
 slice). We must decide deliberately whether to keep that, and the two schemes differ:
 
-- **`dyadic_real` (invertible baseline): match the C reference exactly — no special edge
-  handling.** Round-trip invertibility (§8) depends on the forward window being exactly what
-  the inverse expects; do not perturb it. Document Nyquist-edge attenuation as a known,
-  intended property of this scheme.
+- **`dyadic_real` (invertible baseline): no special edge handling.** Each band's window is
+  the plain Gaussian screen built as in the C reference (§3.1); the band *layout* is
+  gaussogram's own (the Nyquist bin is a separate band), so outputs are not comparable to
+  any C real-scheme output. The real schemes are instead checked against an independent
+  numpy implementation of the definition and pinned by golden vectors (§8). Round-trip invertibility (§8) depends on the forward window being exactly what the
+  inverse expects; do not perturb it. Document Nyquist-adjacent attenuation in the top band
+  as a known, intended property of this scheme.
 
 - **`dyadic_dual_real` (lossy feature scheme): optional flat-top at Nyquist**, controlled by
-  an explicit `nyquist_flat_top: bool` field on the top `Window` (default **off**, i.e.
-  match C). When on, construct the top band's frequency-domain window normally, then for
+  an explicit `nyquist_flat_top: bool` field on the top `Window` (default **off**: the plain
+  Gaussian screen, as for `dyadic_real`). When on, construct the top band's frequency-domain window normally, then for
   every bin from the band **centre** `fcentre` up to the band's top bin `N/2 − 1`, set the
   window value to its peak (the value at `fcentre`, which is the max after the unit-sum
   normalization). Concretely, for band `[lo, N/2)` with screen `w[0..width]` indexed so that
