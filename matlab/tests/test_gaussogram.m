@@ -278,14 +278,17 @@ for i = 1:numel(bad)
     end
     assert_true(threw, sprintf('partitions(%d, %s) should be rejected', bad{i}{:}));
 end
-c = gaussogram(randn(64, 1), 'scheme', 'dyadic_real');
-threw = false;
-try
-    gaussogram_inverse_real([c, c]);
-catch err
-    threw = strcmp(err.identifier, 'gaussogram:coeffsShape');
+c = gaussogram(randn(64, 1), 'scheme', 'dyadic_real');   % 33 coeffs
+for bad = {[c, c], reshape(c, [1, 3, 11])}
+    threw = false;
+    try
+        gaussogram_inverse_real(bad{1});
+    catch err
+        threw = strcmp(err.identifier, 'gaussogram:coeffsShape');
+    end
+    assert_true(threw, sprintf('inverse_real should reject a %s array of coefficients', ...
+        mat2str(size(bad{1}))));
 end
-assert_true(threw, 'inverse_real should reject a matrix of coefficients');
 end
 
 function t_handle_survives_save_load()
