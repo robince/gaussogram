@@ -3,13 +3,13 @@
 
 use std::panic;
 use std::slice;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use num_complex::Complex;
 
 use gaussogram_core::{
     cached_engine, complex_partitions, legacy_real_partitions, Gaussogram1d, SchemeKind,
-    SchemeSpec, WindowKind, STATUS_INTERNAL, STATUS_OK, STATUS_UNKNOWN_SCHEME,
+    SchemeSpec, Scratch, WindowKind, STATUS_INTERNAL, STATUS_OK, STATUS_UNKNOWN_SCHEME,
     STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
 };
 
@@ -24,6 +24,20 @@ pub use gaussogram_core::{
 /// recently used configuration (e.g. the MEX one-shot path) is cheap.
 pub struct GaussogramHandle {
     engine: Arc<Gaussogram1d>,
+    /// Reused across single-segment calls so a persistent handle does not
+    /// allocate per transform. Behind a mutex because the C API takes
+    /// `const GaussogramHandle*`; if a caller does use one handle from several
+    /// threads at once, the losers fall back to a temporary scratch.
+    scratch: Mutex<Scratch>,
+}
+
+impl GaussogramHandle {
+    fn with_scratch<R>(&self, f: impl FnOnce(&Gaussogram1d, &mut Scratch) -> R) -> R {
+        match self.scratch.try_lock() {
+            Ok(mut scratch) => f(&self.engine, &mut scratch),
+            Err(_) => f(&self.engine, &mut self.engine.alloc_scratch()),
+        }
+    }
 }
 
 fn engine_from_id(
@@ -85,7 +99,8 @@ pub unsafe extern "C" fn gaussogram_create(
             Ok(e) => e,
             Err(status) => return status,
         };
-        let boxed = Box::new(GaussogramHandle { engine });
+        let scratch = Mutex::new(engine.alloc_scratch());
+        let boxed = Box::new(GaussogramHandle { engine, scratch });
         unsafe {
             *out_handle = Box::into_raw(boxed);
         }
@@ -134,11 +149,11 @@ pub unsafe extern "C" fn gaussogram_forward_real(
         if handle.is_null() || signal.is_null() || out.is_null() {
             return STATUS_INTERNAL;
         }
-        let engine = unsafe { &(*handle).engine };
+        let handle = unsafe { &*handle };
         let sig = unsafe { slice::from_raw_parts(signal, signal_len) };
         let out_complex =
             unsafe { slice::from_raw_parts_mut(out as *mut Complex<f64>, out_len_complex) };
-        match engine.forward(sig, out_complex) {
+        match handle.with_scratch(|engine, scratch| engine.forward_with(sig, out_complex, scratch)) {
             Ok(()) => STATUS_OK,
             Err(e) => e.status_code(),
         }
@@ -247,10 +262,10 @@ pub unsafe extern "C" fn gaussogram_inverse_real(
         if handle.is_null() || coeffs.is_null() || out.is_null() {
             return STATUS_INTERNAL;
         }
-        let engine = unsafe { &(*handle).engine };
+        let handle = unsafe { &*handle };
         let c = unsafe { slice::from_raw_parts(coeffs as *const Complex<f64>, coeffs_len_complex) };
         let out_real = unsafe { slice::from_raw_parts_mut(out, out_len) };
-        match engine.inverse(c, out_real) {
+        match handle.with_scratch(|engine, scratch| engine.inverse_with(c, out_real, scratch)) {
             Ok(()) => STATUS_OK,
             Err(e) => e.status_code(),
         }

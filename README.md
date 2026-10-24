@@ -97,6 +97,9 @@ recon2 = g.inverse_real(fine, bands_per_octave=2)   # ~exact
 # Reusable handle (builds FFT plans + scratch once; best for tight loops)
 h = g.Gaussogram1d(512, scheme="dyadic_real")
 c = h.forward(x); xr = h.inverse(c)
+
+# Many segments at once: rows of a C-contiguous (count, N) array, in parallel
+C = h.forward_batch(np.random.randn(100, 512))   # (100, N/2+1)
 ```
 
 ### Python API
@@ -104,7 +107,10 @@ c = h.forward(x); xr = h.inverse(c)
 - `gft1d_real(x, scheme=…, window_type=…, nyquist_flat_top=…, bands_per_octave=…)` — forward GFT of a real signal.
 - `gft1d(z, …)` — forward GFT of a complex signal (`dyadic_complex`).
 - `inverse_real(coeffs, …, bands_per_octave=…)` — inverse of the invertible `dyadic_real` scheme (`bands_per_octave` must match the forward call).
-- `Gaussogram1d(n, …, bands_per_octave=…)` — reusable engine handle (`.forward` / `.inverse`).
+- `Gaussogram1d(n, …, bands_per_octave=…)` — reusable engine handle:
+  `.forward(x, out=None)`, `.forward_batch(X, out=None)` (rows of a
+  C-contiguous `(count, N)` array, parallel across rows), `.inverse(c)`.
+  One handle per thread; the free functions are thread-safe.
 - `scheme_bands(n, …)` / `output_len(n, …)` — per-band geometry (`BandLayout`) and packed length.
 - `partitions(n)` / `real_partitions(n)` — legacy partition boundaries.
 - `to_grid(coeffs, n, …)` — render packed coefficients to a `(N/2+1, N)` image. Display options:
@@ -124,7 +130,14 @@ c = h.forward(x); xr = h.inverse(c)
   permutation clustering, TFCE) or `scipy` connected components.
 
 Inputs are validated strictly (1-D, C-contiguous, exact dtype) — no silent
-copies/casts.
+copies/casts. Built engines (windows + FFT plans) are cached process-wide (a few
+recent configurations), so repeated free-function calls do not rebuild them.
+
+Batch transforms (`forward_batch` in Python, an `N x count` matrix in MATLAB)
+use a rayon thread pool with one thread per CPU by default. Set the
+`RAYON_NUM_THREADS` environment variable before the first transform to change
+that, e.g. to `1` inside MATLAB `parfor` workers or other process pools to avoid
+oversubscription.
 
 ## Architecture
 
