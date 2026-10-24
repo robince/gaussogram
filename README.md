@@ -35,7 +35,7 @@ the Gaussian "dead zones" at octave joins that the single dyadic cover suffers.
 
 | scheme | input | output length | invertible | notes |
 |---|---|---|---|---|
-| `dyadic_dual_real` *(default)* | real | `N − 1` | no (redundant) | dyadic cover **plus** half-octave-offset bands centred on the octave joins, to rescue tones that fall into the single cover's dead zones |
+| `dyadic_dual_real` *(default)* | real | `N − 1` | yes (least-squares frame inverse) | dyadic cover **plus** half-octave-offset bands centred on the octave joins, to rescue tones that fall into the single cover's dead zones |
 | `dyadic_real` | real | `N/2 + 1` | **yes** | baseline single dyadic cover; the invertible, critically-sampled transform |
 | `dyadic_complex` | complex | `N` | no | symmetric complex dyadic scheme (port of the legacy complex transform); min `N = 8` |
 
@@ -94,8 +94,9 @@ x = np.cos(2 * np.pi * 64 * np.arange(512) / 512)   # a tone
 
 c = g.gft1d_real(x)                  # default dyadic_dual_real -> N-1 coeffs
 grid = g.to_grid(c, len(x))          # (N/2+1, N) magnitude image for plotting
+xr = g.inverse_real(c)               # frame inverse: ~exact, least-squares if c is edited
 
-# Invertible scheme + round trip
+# Critically sampled scheme + round trip
 coeffs = g.gft1d_real(x, scheme="dyadic_real")
 recon = g.inverse_real(coeffs)       # ~exact
 
@@ -115,7 +116,7 @@ C = h.forward_batch(np.random.randn(100, 512))   # (100, N/2+1)
 
 - `gft1d_real(x, scheme=…, window_type=…, nyquist_flat_top=…, bands_per_octave=…)` — forward GFT of a real signal.
 - `gft1d(z, …)` — forward GFT of a complex signal (`dyadic_complex`).
-- `inverse_real(coeffs, …, bands_per_octave=…)` — inverse of the invertible `dyadic_real` scheme (`bands_per_octave` must match the forward call).
+- `inverse_real(coeffs, …, bands_per_octave=…, scheme=None, nyquist_flat_top=…)` — inverse of a real scheme: exact for `dyadic_real`, least-squares (canonical dual) frame inverse for `dyadic_dual_real`. `scheme=None` infers it from the length (`N/2+1` vs `N−1`); the other options must match the forward call.
 - `Gaussogram1d(n, …, bands_per_octave=…)` — reusable engine handle:
   `.forward(x, out=None)`, `.forward_batch(X, out=None)` (rows of a
   C-contiguous `(count, N)` array, parallel across rows), `.inverse(c)`.

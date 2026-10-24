@@ -33,15 +33,13 @@ fn handle_forward_and_inverse_match_core_across_calls() {
             for (k, e) in expected.iter().enumerate() {
                 assert_eq!((out[2 * k], out[2 * k + 1]), (e.re, e.im));
             }
-            if scheme_id == 1 {
-                let mut recon = vec![0.0f64; n];
-                let st = unsafe {
-                    gaussogram_inverse_real(h, out.as_ptr(), olen, recon.as_mut_ptr(), n)
-                };
-                assert_eq!(st, STATUS_OK);
-                for (a, b) in x.iter().zip(&recon) {
-                    assert!((a - b).abs() < 1e-10);
-                }
+            // Both real schemes invert (dyadic_dual_real via the frame inverse).
+            let mut recon = vec![0.0f64; n];
+            let st =
+                unsafe { gaussogram_inverse_real(h, out.as_ptr(), olen, recon.as_mut_ptr(), n) };
+            assert_eq!(st, STATUS_OK);
+            for (a, b) in x.iter().zip(&recon) {
+                assert!((a - b).abs() < 1e-10);
             }
         }
 

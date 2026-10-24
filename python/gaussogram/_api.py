@@ -86,7 +86,7 @@ def gft1d_real(
 
     Default scheme `dyadic_dual_real` returns **N-1** complex coefficients
     (a deliberate breaking change from the legacy length-N contract). Pass
-    ``scheme="dyadic_real"`` for the invertible length-``N/2+1`` baseline.
+    ``scheme="dyadic_real"`` for the critically sampled length-``N/2+1`` baseline.
 
     ``bands_per_octave`` (a power of two) subdivides each dyadic octave into that
     many frequency sub-bands, trading time resolution for frequency resolution.
@@ -109,18 +109,34 @@ def gft1d(z, window_type: str = "gaussian") -> NDArray[np.complex128]:
 
 
 def inverse_real(
-    coeffs, window_type: str = "gaussian", bands_per_octave: int = 1
+    coeffs,
+    window_type: str = "gaussian",
+    bands_per_octave: int = 1,
+    scheme: str | None = None,
+    nyquist_flat_top: bool = False,
 ) -> NDArray[np.float64]:
-    """Inverse of the invertible `dyadic_real` scheme (length-``N/2+1`` input).
+    """Inverse of a real-input scheme.
+
+    * ``dyadic_real`` (length ``N/2+1``): exact per-band inverse.
+    * ``dyadic_dual_real`` (length ``N-1``): least-squares (canonical dual)
+      frame inverse. Exact for unmodified coefficients; for modified ones
+      (thresholded, masked, denoised) it returns the signal whose coefficients
+      are closest to them, using both tilings, so it is far less sensitive to
+      edits near octave joins than inverting tiling A alone.
+
+    ``scheme=None`` infers the scheme from the length: ``N/2+1`` is always
+    ``2^k+1`` and ``N-1`` is always ``2^k-1``, which never coincide.
 
     .. warning::
-        ``bands_per_octave`` (and ``window_type``) must match the values passed
-        to the forward transform. A mismatch **cannot be detected** — the packed
-        length ``N/2+1`` is the same for every ``bands_per_octave`` — and
-        silently reconstructs the wrong signal.
+        ``bands_per_octave``, ``window_type`` and ``nyquist_flat_top`` must
+        match the values passed to the forward transform. A mismatch **cannot
+        be detected** — the packed length is the same for every
+        ``bands_per_octave`` — and silently reconstructs the wrong signal.
     """
     coeffs = _require_1d(coeffs, np.complex128, "coeffs")
-    return _native.inverse_real(coeffs, window_type, int(bands_per_octave))
+    return _native.inverse_real(
+        coeffs, window_type, int(bands_per_octave), scheme, bool(nyquist_flat_top)
+    )
 
 
 def partitions(n: int) -> NDArray[np.int32]:

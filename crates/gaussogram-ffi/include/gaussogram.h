@@ -73,7 +73,8 @@ int32_t gaussogram_forward_real_batch(
     size_t out_len_complex
 );
 
-/* Inverse transform for invertible real schemes (currently dyadic_real).
+/* Inverse transform for the real schemes: exact for dyadic_real, the
+ * least-squares frame inverse for dyadic_dual_real.
  * coeffs has 2 * coeffs_len_complex doubles (interleaved); out has out_len
  * doubles (reconstructed signal, length N). */
 int32_t gaussogram_inverse_real(

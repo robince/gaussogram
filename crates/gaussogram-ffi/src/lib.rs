@@ -253,7 +253,8 @@ pub unsafe extern "C" fn gaussogram_complex_partitions(
     result.unwrap_or(-STATUS_INTERNAL)
 }
 
-/// Inverse transform for invertible real schemes (currently `dyadic_real`).
+/// Inverse transform for the real schemes: exact for `dyadic_real`, the
+/// least-squares frame inverse for `dyadic_dual_real`.
 /// `coeffs` has `2 * coeffs_len_complex` doubles (interleaved re,im); `out` has
 /// `out_len` doubles (the reconstructed real signal, length N).
 ///
