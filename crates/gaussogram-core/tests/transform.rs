@@ -367,15 +367,18 @@ fn reference_frame_inverse(
 
 #[test]
 fn dual_inverse_energy_weighting_beats_stored_weighting_for_independent_noise() {
-    // Independent errors on the stored coefficients with variance proportional
-    // to 1/width (equal variance per energy-normalised coefficient) leave
-    // every band's estimate of a bin equally noisy, so blending by window
-    // power alone (the engine) must beat the stored-coefficient least squares
-    // that also divides each band's weight by its width. (Noise added to the
-    // signal before `forward` would not test this: it is consistent across
-    // bands and every exact inverse recovers it.) The gain is small (about
-    // 0.02-0.04 dB overall, up to ~0.5 dB at individual overlap bins), so the
-    // check is strict ordering on fixed seeds rather than a margin.
+    // Error model: zero-mean errors on the stored coefficients, uncorrelated
+    // within each band with covariance proportional to I/width, and
+    // uncorrelated across bands (here independent uniform noise scaled by
+    // 1/sqrt(width)). Every band's estimate of a bin is then equally noisy, so
+    // blending by window power alone (the engine) must beat the
+    // stored-coefficient least squares that also divides each band's weight by
+    // its width. White noise added to the input before `forward` does not fit
+    // this model and would not test it: overlapping bands carry W_b[k] times
+    // the same noise bin, so every exact inverse returns the same noisy
+    // signal. The gain is small (about 0.02-0.04 dB overall, up to ~0.5 dB at
+    // individual overlap bins), so the check is strict ordering on fixed seeds
+    // rather than a margin.
     for &bpo in &[1usize, 4] {
         let n = 1024;
         let engine = build(dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap());

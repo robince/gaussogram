@@ -596,9 +596,11 @@ Use `proptest` for invariants and standard `#[test]` for parity/numerics.
   `D[k] = Σ_b w_b[k]² > 0`, and `X[k] = Σ_b FFT(c_b)[k] · w_b[k] / D[k]` (overlapping bands
   blended by window power alone). Exact for `forward(x)` (~1e-12); for edited coefficients it
   returns the least-squares signal in that energy metric (residual orthogonal to the range
-  under the width-weighted inner product), the best blend for independent coefficient errors
-  with variance ∝ `1/width_b` (equal per energy-normalised coefficient). Noise added to the
-  signal before the forward transform is unaffected by the blend: any exact inverse returns it.
+  under the width-weighted inner product). These weights minimise expected reconstruction
+  error for zero-mean coefficient errors that are uncorrelated within each band with
+  covariance ∝ `I / width_b` and uncorrelated across bands. White noise added to the input
+  does not fit this model: overlapping bands carry `w_b[k]` times the same noise bin, so any
+  exact inverse returns the same noisy signal and the blend has no effect on it.
 
 **Functional win (the point of the new scheme):**
 - **Band-edge tone test:** synthesise pure tones at A's octave boundaries (the dead zones,
