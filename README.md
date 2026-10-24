@@ -113,7 +113,9 @@ C = h.forward_batch(np.random.randn(100, 512))   # (100, N/2+1)
   One handle per thread; the free functions are thread-safe.
 - `scheme_bands(n, …)` / `output_len(n, …)` — per-band geometry (`BandLayout`) and packed length.
 - `partitions(n)` / `real_partitions(n)` — legacy partition boundaries.
-- `to_grid(coeffs, n, …)` — render packed coefficients to a `(N/2+1, N)` image. Display options:
+- `to_grid(coeffs, n, …)` — render packed coefficients to an image, `(N/2+1, N)`
+  by default or `(n_freq, n_time)` (use a screen-sized shape for long signals:
+  the full grid is 16 GiB at N = 2^16). Display options:
   - `interp` — time-axis resampling (`"linear"`, `"nearest"`).
   - `interp_freq` — frequency-axis placement (`"block"`, `"linear"`, `"gauss"`).
   - `normalize` — per-band brightness (`"none"`, `"width"` L1, `"energy"` L2).

@@ -14,6 +14,7 @@ passed = passed + run_case(@t_batch_matches_single);
 passed = passed + run_case(@t_roundtrip_dyadic_real);
 passed = passed + run_case(@t_scheme_bands_layout);
 passed = passed + run_case(@t_to_grid_modes);
+passed = passed + run_case(@t_to_grid_output_shape);
 passed = passed + run_case(@t_rejects_complex_input);
 passed = passed + run_case(@t_rejects_non_power_of_two);
 passed = passed + run_case(@t_handle_matches_function);
@@ -197,6 +198,43 @@ catch
 end
 assert_true(threw, 'engine should reject a wrong-length signal');
 delete(eng);
+end
+
+function t_to_grid_output_shape()
+% Rows at 0, 2, 4, ... bins and columns at 0, 2, 4, ... samples are exactly
+% the even rows/columns of the full-resolution render.
+n = 256;
+rng(11);
+c = gaussogram(randn(n, 1));
+for interp = {'linear', 'nearest'}
+    for f = {'block', 'linear', 'gauss'}
+        args = {'interp', interp{1}, 'interp_freq', f{1}};
+        full = gaussogram_to_grid(c, n, args{:});
+        assert_true(isequal(size(full), [n / 2 + 1, n]), 'default grid should be (N/2+1) x N');
+        small = gaussogram_to_grid(c, n, args{:}, 'n_freq', n / 4 + 1, 'n_time', n / 2);
+        assert_true(isequal(small, full(1:2:end, 1:2:end)), ...
+            sprintf('decimated %s/%s grid should subsample the full grid', interp{1}, f{1}));
+    end
+end
+% Exact nearest-sample ties (same cases as the Python test): with n = 1024,
+% n_time = 196 and a width-2 band, column 147 is the wrap-around tie and must
+% take sample 0. Check via a width-2 band of a dyadic_real render.
+n2 = 1024;
+c2 = gaussogram(randn(n2, 1), 'scheme', 'dyadic_real');
+bands = gaussogram_scheme_bands(n2, 'scheme', 'dyadic_real');
+b = find(bands.width == 2, 1);
+g2 = gaussogram_to_grid(c2, n2, 'scheme', 'dyadic_real', 'interp', 'nearest', ...
+    'n_time', 196);
+row = bands.src_lo(b) + 1;   % 1-based grid row of the band's first bin
+mag = abs(c2(bands.out_off(b) + (1:2)));
+assert_true(g2(row, 148) == mag(1), 'wrap-around tie should take sample 0');
+threw = false;
+try
+    gaussogram_to_grid(c, n, 'n_freq', 1);
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:shape');
+end
+assert_true(threw, 'n_freq < 2 should be rejected');
 end
 
 function t_handle_survives_save_load()

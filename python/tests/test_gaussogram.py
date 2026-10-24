@@ -446,6 +446,67 @@ def test_bands_per_octave_one_matches_default_layout():
         np.testing.assert_array_equal(a.fcentre, b.fcentre)
 
 
+# ---- to_grid output resolution and memory -----------------------------------
+
+
+@pytest.mark.parametrize("interp", ["linear", "nearest"])
+@pytest.mark.parametrize("interp_freq", ["block", "linear", "gauss"])
+def test_to_grid_decimated_shape_matches_full_grid_subsample(interp, interp_freq):
+    # Rows at 0, 2, 4, ... bins and columns at 0, 2, 4, ... samples are exactly
+    # the even rows/columns of the full-resolution render.
+    n = 256
+    c = g.gft1d_real(np.random.default_rng(6).standard_normal(n), bands_per_octave=2)
+    kw = dict(interp=interp, interp_freq=interp_freq, bands_per_octave=2)
+    full = g.to_grid(c, n, **kw)
+    assert full.shape == (n // 2 + 1, n)
+    np.testing.assert_array_equal(g.to_grid(c, n, n_freq=n // 2 + 1, n_time=n, **kw), full)
+    small = g.to_grid(c, n, n_freq=n // 4 + 1, n_time=n // 2, **kw)
+    np.testing.assert_array_equal(small, full[::2, ::2])
+
+
+def test_to_grid_rejects_degenerate_shape():
+    n = 64
+    c = g.gft1d_real(np.ones(n))
+    with pytest.raises(ValueError, match="n_freq"):
+        g.to_grid(c, n, n_freq=1)
+
+
+def test_to_grid_peak_memory_stays_near_grid_size():
+    # The nearest-neighbour path once built an (N, width) distance matrix per
+    # band, and the linear-frequency path several full-size temporaries.
+    import tracemalloc
+
+    # Working blocks are a fixed ~8 MB, so use a grid much larger than that.
+    n = 4096
+    c = g.gft1d_real(np.random.default_rng(7).standard_normal(n))
+    grid_bytes = (n // 2 + 1) * n * 8
+    for kw in (dict(interp="nearest"), dict(interp_freq="linear"), dict(smooth=1.0)):
+        tracemalloc.start()
+        g.to_grid(c, n, **kw)
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert peak < 1.5 * grid_bytes, (kw, peak / grid_bytes)
+
+
+def test_nearest_sample_index_matches_exact_circular_distance():
+    # Brute force in exact rational arithmetic: nearest of w samples at j*N/w to
+    # each column at c*N/ntime, circular distance, ties to the lower index.
+    from fractions import Fraction
+
+    from gaussogram._api import _nearest_sample_index
+
+    for ntime, w in [(8, 3), (196, 2), (130, 65), (256, 65), (100, 7), (64, 64), (5, 9)]:
+        got = _nearest_sample_index(ntime, w)
+        for c in range(ntime):
+            k = Fraction(c * w, ntime)  # column position in sample units
+            d = [min(abs(k - j), w - abs(k - j)) for j in range(w)]
+            assert got[c] == d.index(min(d)), (ntime, w, c)
+    # The cases from review: n=8 width-3 band at t=4 is an exact tie (-> 1);
+    # n=1024, n_time=196, width 2, column 147 is the wrap-around tie (-> 0).
+    assert _nearest_sample_index(8, 3)[4] == 1
+    assert _nearest_sample_index(196, 2)[147] == 0
+
+
 # ---- thread safety of the GIL-released paths ------------------------------
 
 
