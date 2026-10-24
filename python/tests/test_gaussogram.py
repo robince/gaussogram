@@ -486,3 +486,22 @@ def test_to_grid_peak_memory_stays_near_grid_size():
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
         assert peak < 1.5 * grid_bytes, (kw, peak / grid_bytes)
+
+
+def test_nearest_sample_index_matches_exact_circular_distance():
+    # Brute force in exact rational arithmetic: nearest of w samples at j*N/w to
+    # each column at c*N/ntime, circular distance, ties to the lower index.
+    from fractions import Fraction
+
+    from gaussogram._api import _nearest_sample_index
+
+    for ntime, w in [(8, 3), (196, 2), (130, 65), (256, 65), (100, 7), (64, 64), (5, 9)]:
+        got = _nearest_sample_index(ntime, w)
+        for c in range(ntime):
+            k = Fraction(c * w, ntime)  # column position in sample units
+            d = [min(abs(k - j), w - abs(k - j)) for j in range(w)]
+            assert got[c] == d.index(min(d)), (ntime, w, c)
+    # The cases from review: n=8 width-3 band at t=4 is an exact tie (-> 1);
+    # n=1024, n_time=196, width 2, column 147 is the wrap-around tie (-> 0).
+    assert _nearest_sample_index(8, 3)[4] == 1
+    assert _nearest_sample_index(196, 2)[147] == 0

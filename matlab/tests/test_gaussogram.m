@@ -212,6 +212,18 @@ for interp = {'linear', 'nearest'}
             sprintf('decimated %s/%s grid should subsample the full grid', interp{1}, f{1}));
     end
 end
+% Exact nearest-sample ties (same cases as the Python test): with n = 1024,
+% n_time = 196 and a width-2 band, column 147 is the wrap-around tie and must
+% take sample 0. Check via a width-2 band of a dyadic_real render.
+n2 = 1024;
+c2 = gaussogram(randn(n2, 1), 'scheme', 'dyadic_real');
+bands = gaussogram_scheme_bands(n2, 'scheme', 'dyadic_real');
+b = find(bands.width == 2, 1);
+g2 = gaussogram_to_grid(c2, n2, 'scheme', 'dyadic_real', 'interp', 'nearest', ...
+    'n_time', 196);
+row = bands.src_lo(b) + 1;   % 1-based grid row of the band's first bin
+mag = abs(c2(bands.out_off(b) + (1:2)));
+assert_true(g2(row, 148) == mag(1), 'wrap-around tie should take sample 0');
 threw = false;
 try
     gaussogram_to_grid(c, n, 'n_freq', 1);

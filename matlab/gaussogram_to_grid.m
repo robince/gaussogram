@@ -101,7 +101,7 @@ if strcmp(interp_freq, 'block')
         if r0 > r1
             continue;
         end
-        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times);
+        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times, ntime);
         for b0 = r0:block_rows:r1
             b1 = min(b0 + block_rows - 1, r1);
             grid(b0:b1, :) = max(grid(b0:b1, :), row);
@@ -117,7 +117,7 @@ elseif strcmp(interp_freq, 'linear')  % anchor each band at its centre, interpol
         if fc > n / 2
             continue;
         end
-        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times);
+        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times, ntime);
         existing = find(node_freqs == fc, 1);
         if isempty(existing)
             node_freqs(end + 1) = fc;             %#ok<AGROW>
@@ -143,7 +143,7 @@ else  % 'gauss': weight each band by its window profile, normalise overlaps
         if r0 > r1
             continue;
         end
-        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times);
+        row = local_band_row(coeffs, off, w, n, interp, normalize, target_times, ntime);
         f = row_freqs(r0:r1);          % frequencies of the covered rows (column)
         if w == 1 || fc == 0
             % DC / width-1 bands carry no taper: flat over their support.
@@ -177,7 +177,7 @@ r0 = sum(row_freqs < lo) + 1;
 r1 = sum(row_freqs < hi);
 end
 
-function row = local_band_row(coeffs, off, w, n, interp, normalize, target_times)
+function row = local_band_row(coeffs, off, w, n, interp, normalize, target_times, ntime)
 %LOCAL_BAND_ROW  Time-resample one band's magnitude to the target times.
 mag = abs(coeffs(off + 1 : off + w));   % 1-based slice
 % |coeff| ~ 1/width for a fixed-amplitude line; x width (L1) equalises tone
@@ -196,11 +196,13 @@ end
 % so resample periodically: the last sample wraps back to sample 0 at t=n.
 if strcmp(interp, 'nearest')
     % Circularly nearest sample, computed directly rather than via a
-    % (numel(target_times) x w) distance matrix. Ties go to the lower index,
-    % so the wrap-around tie between samples w-1 and 0 goes to 0.
-    k = target_times * (w / n);
-    idx = ceil(k - 0.5);
-    idx(k == w - 0.5) = 0;
+    % (ntime x w) distance matrix. Column c sits at k = c*w/ntime in sample
+    % units; work with the integers 2*c*w and ntime so float rounding of k
+    % cannot break exact ties inconsistently. Ties go to the lower index, so
+    % the wrap-around tie between samples w-1 and 0 goes to 0.
+    c = 0:(ntime - 1);
+    idx = ceil((2 * c * w - ntime) / (2 * ntime));   % exact for these integers
+    idx(2 * c * w == (2 * w - 1) * ntime) = 0;
     row = reshape(mag(mod(idx, w) + 1), 1, []);
 else  % linear, periodic (matches numpy.interp with period=n)
     band_times = (0:(w - 1)) * (n / w);
@@ -223,10 +225,10 @@ if m == 1
     grid = repmat(node_profiles(1, :), nrows, 1);
     return;
 end
-% Bracketing lower-node index for each row (clamped so endpoints stay flat):
-% the number of nodes at or below the row frequency.
-idx = sum(x >= node_freqs.', 2);
-idx = min(max(idx, 1), m - 1);
+% Bracketing lower-node index for each row: the number of nodes at or below
+% the row frequency, clamped to [1, m-1] so endpoints stay flat. discretize
+% with these edges computes exactly that without an nrows x m comparison.
+idx = discretize(x, [-Inf; node_freqs(2:m - 1); Inf]);
 x0 = node_freqs(idx);            % nrows x 1
 x1 = node_freqs(idx + 1);        % nrows x 1
 denom = x1 - x0;                 % nrows x 1

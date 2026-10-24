@@ -248,6 +248,23 @@ def _interp_freq_grid(
     return grid
 
 
+def _nearest_sample_index(ntime: int, w: int) -> NDArray[np.int64]:
+    """Index of the circularly nearest of ``w`` band samples (at times
+    ``j*N/w``) for each of ``ntime`` columns (at times ``c*N/ntime``).
+
+    Column ``c`` sits at ``k = c*w/ntime`` in sample units, so this is done in
+    exact integer arithmetic: float rounding of ``k`` would otherwise break
+    exact ties inconsistently. Ties go to the lower index, so the wrap-around
+    tie between samples ``w-1`` and ``0`` goes to 0. Computed directly rather
+    than via an ``(ntime, w)`` distance matrix.
+    """
+    c = np.arange(ntime, dtype=np.int64)
+    num = 2 * c * w - ntime            # 2*ntime*(k - 1/2)
+    idx = -((-num) // (2 * ntime))     # ceil(k - 1/2): ties round down
+    idx[2 * c * w == (2 * w - 1) * ntime] = 0
+    return idx % w
+
+
 def to_grid(
     coeffs,
     n: int,
@@ -370,13 +387,7 @@ def to_grid(
         # (matching ``coefficient_geometry``). The transform is circular, so
         # resample periodically: the last sample wraps back to sample 0 at t=n.
         if interp == "nearest":
-            # Circularly nearest sample, computed directly rather than via an
-            # (n_time, w) distance matrix. Ties go to the lower index, so the
-            # wrap-around tie between samples w-1 and 0 goes to 0.
-            k = target_times * (w / n)
-            idx = np.ceil(k - 0.5).astype(np.int64)
-            idx[k == w - 0.5] = 0
-            return mag[idx % w]
+            return mag[_nearest_sample_index(ntime, w)]
         band_times = np.arange(w) * (n / w)
         return np.interp(target_times, band_times, mag, period=n)
 
