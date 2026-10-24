@@ -17,7 +17,7 @@ pub struct Scratch {
     spectrum: Vec<Complex<f64>>,
     /// Real-input copy buffer (real schemes only).
     real_in: Vec<f64>,
-    /// Per-band working buffer, sized to the maximum band width.
+    /// Per-band working buffer for the forward, sized to the maximum band width.
     band: Vec<Complex<f64>>,
     /// FFT scratch, sized to the maximum plan scratch length.
     fft: Vec<Complex<f64>>,
@@ -88,6 +88,16 @@ impl Gaussogram1d {
                 });
             }
         }
+
+        // The inverse works in place on the spectrum buffer, which relies on
+        // invertible schemes packing a disjoint half-spectrum cover in order.
+        assert!(
+            !scheme.invertible
+                || (scheme.output_len == spectrum_len
+                    && scheme.bands.iter().all(|b| b.out_off == b.src_lo)),
+            "invertible scheme '{}' must pack its bands at out_off == src_lo",
+            scheme.name
+        );
 
         let real_inverse = if scheme.invertible {
             let p = backend.real_inverse(n);
@@ -333,12 +343,18 @@ impl Gaussogram1d {
         self.forward_complex_with(signal, out, &mut scratch)
     }
 
-    /// Inverse transform (only for invertible schemes, currently `dyadic_real`),
-    /// reusing a caller-owned [`Scratch`].
-    pub fn inverse_with(
+    /// Copy packed coefficients into `scratch`, ready for
+    /// [`Gaussogram1d::inverse_loaded`]. As with [`Gaussogram1d::load_real`],
+    /// this lets a binding read the caller's buffer only while it holds its
+    /// interpreter lock.
+    ///
+    /// An invertible scheme is a disjoint cover of the half-spectrum packed in
+    /// order (every band's `out_off == src_lo`, `output_len == N/2 + 1`), so the
+    /// coefficients are copied straight into the spectrum buffer and each band
+    /// is transformed in place there: no copy beyond this one.
+    pub fn load_coeffs(
         &self,
         coeffs: &[Complex<f64>],
-        out: &mut [f64],
         scratch: &mut Scratch,
     ) -> Result<(), GaussogramError> {
         if !self.scheme.invertible {
@@ -350,6 +366,16 @@ impl Gaussogram1d {
                 got: coeffs.len(),
             });
         }
+        scratch.spectrum.copy_from_slice(coeffs);
+        Ok(())
+    }
+
+    /// Inverse transform of the coefficients previously copied into `scratch`
+    /// by [`Gaussogram1d::load_coeffs`] (consumes them).
+    pub fn inverse_loaded(&self, out: &mut [f64], scratch: &mut Scratch) -> Result<(), GaussogramError> {
+        if !self.scheme.invertible {
+            return Err(GaussogramError::NotInvertible(self.scheme.name));
+        }
         if out.len() != self.scheme.n {
             return Err(GaussogramError::InputLenMismatch {
                 expected: self.scheme.n,
@@ -357,19 +383,15 @@ impl Gaussogram1d {
             });
         }
 
-        // Rebuild the half-spectrum band by band: FFT(coeffs_band) recovers
-        // S_slice * screen; divide by screen to recover S_slice.
+        // Rebuild the half-spectrum band by band, in place: FFT(coeffs_band)
+        // recovers S_slice * screen; divide by screen to recover S_slice.
         for (band, window) in self.scheme.bands.iter().zip(self.scheme.windows.iter()) {
             let w = band.width();
-            let buf = &mut scratch.band[..w];
-            buf.copy_from_slice(&coeffs[band.out_off..band.out_off + w]);
+            let buf = &mut scratch.spectrum[band.src_lo..band.src_hi];
             let plan = &self.forward_band[&w];
             plan.process(buf, &mut scratch.fft);
-            for (dst, (&val, &sc)) in scratch.spectrum[band.src_lo..band.src_hi]
-                .iter_mut()
-                .zip(buf.iter().zip(window.screen.iter()))
-            {
-                *dst = val / sc;
+            for (v, &sc) in buf.iter_mut().zip(window.screen.iter()) {
+                *v /= sc;
             }
         }
 
@@ -388,6 +410,19 @@ impl Gaussogram1d {
             *v *= inv;
         }
         Ok(())
+    }
+
+    /// Inverse transform (only for invertible schemes, currently `dyadic_real`),
+    /// reusing a caller-owned [`Scratch`]. Equivalent to
+    /// [`Gaussogram1d::load_coeffs`] followed by [`Gaussogram1d::inverse_loaded`].
+    pub fn inverse_with(
+        &self,
+        coeffs: &[Complex<f64>],
+        out: &mut [f64],
+        scratch: &mut Scratch,
+    ) -> Result<(), GaussogramError> {
+        self.load_coeffs(coeffs, scratch)?;
+        self.inverse_loaded(out, scratch)
     }
 
     /// Inverse transform (only for invertible schemes, currently `dyadic_real`).

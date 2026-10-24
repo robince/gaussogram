@@ -419,8 +419,8 @@ class CoeffGeometry(NamedTuple):
                                 #: negative-frequency bands of dyadic_complex)
     dt: NDArray[np.float64]     #: time extent (samples) = n / width
     df: NDArray[np.float64]     #: frequency extent (bins) = width
-    logf: NDArray[np.float64]   #: log2(freq), DC floored to log2(0.5) = -1
-    level: NDArray[np.int64]    #: octave index = floor(log2(centre freq))
+    logf: NDArray[np.float64]   #: log2(max(|freq|, 0.5)); DC = -1
+    level: NDArray[np.int64]    #: octave index = floor(log2(max(|centre freq|, 1)))
     sub: NDArray[np.int64]      #: within-octave sub-band rank (low->high frequency)
     tiling: NDArray[np.int64]   #: 0 = tiling A, 1 = tiling B (dual scheme)
     band: NDArray[np.int64]     #: index of the band each coefficient belongs to

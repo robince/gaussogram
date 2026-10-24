@@ -236,6 +236,21 @@ catch err
     threw = strcmp(err.identifier, 'gaussogram:handle');
 end
 assert_true(threw, 'an arbitrary handle value should be rejected');
+% A new engine never takes over a destroyed handle's id, even if the
+% allocator reuses the destroyed engine's address.
+h2 = gaussogram_mex('create', 64, 0, 0, 0);
+assert_true(h2 ~= h, 'handle ids must not be reused');
+gaussogram_mex('destroy', h);   % stale: must not destroy h2's engine
+c = gaussogram_mex('forward_handle', h2, ones(64, 1));
+assert_true(numel(c) == 63, 'the live engine should be unaffected by a stale destroy');
+gaussogram_mex('destroy', h2);
+threw = false;
+try
+    gaussogram_mex('create', Inf, 0, 0, 0);
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:n');
+end
+assert_true(threw, 'a non-finite n should be rejected');
 end
 
 function t_rejects_dyadic_complex_forward()

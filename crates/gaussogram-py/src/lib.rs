@@ -10,18 +10,14 @@
 //!
 //! Zero-copy + GIL release: inputs are borrowed from NumPy (never converted or
 //! copied at the interface), and the GIL is released during the transform.
-//! The forward FFTs work in place, so the core copies the signal into scratch
-//! once per call anyway; that copy is done *while the GIL is held*
-//! (`load_real` / `load_complex`), and the GIL-free part only touches scratch
-//! and the output. Python threads can therefore never race the reader. The
-//! inverse reads `coeffs` throughout, so it instead clears the array's NumPy
-//! `WRITEABLE` flag for the duration (see [`WriteableGuard`]).
-
-use std::os::raw::c_int;
+//! The FFTs work in place, so the core copies its input into scratch once per
+//! call anyway; that copy is done *while the GIL is held* (`load_real` /
+//! `load_complex` / `load_coeffs`), and the GIL-free part only touches scratch
+//! and the output. Python threads can therefore never race the reader, and
+//! the caller's array flags are never touched.
 
 use num_complex::Complex;
-use numpy::npyffi::{PyArrayObject, NPY_ARRAY_WRITEABLE};
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -77,48 +73,6 @@ fn build_scheme(
         }
     };
     s.map_err(map_err)
-}
-
-/// RAII guard that clears a NumPy array's `WRITEABLE` flag while the GIL is
-/// released for a transform, then sets it again on drop. This turns concurrent
-/// Python-side mutation *through this array object* into a hard error rather
-/// than a silent data race against the Rust reader. It is best-effort: other
-/// views or the base array sharing the same buffer keep their own flags and can
-/// still mutate the data.
-///
-/// Only the `WRITEABLE` bit is touched, and only by the guard that actually
-/// cleared it: a guard taken on an already read-only array (including one
-/// another thread is currently guarding) does nothing. Restoring a saved copy
-/// of all the flags instead would let overlapping guards on the same array
-/// leave it permanently read-only.
-///
-/// Construct and drop this only while holding the GIL.
-struct WriteableGuard {
-    ptr: *mut PyArrayObject,
-    cleared: bool,
-}
-
-impl WriteableGuard {
-    /// SAFETY: `ptr` must be a valid NumPy array object and the GIL must be held.
-    unsafe fn lock(ptr: *mut PyArrayObject) -> Self {
-        let bit = NPY_ARRAY_WRITEABLE as c_int;
-        let cleared = (*ptr).flags & bit != 0;
-        if cleared {
-            (*ptr).flags &= !bit;
-        }
-        WriteableGuard { ptr, cleared }
-    }
-}
-
-impl Drop for WriteableGuard {
-    fn drop(&mut self) {
-        // GIL is held here (drop runs back on the Python-facing side).
-        if self.cleared {
-            unsafe {
-                (*self.ptr).flags |= NPY_ARRAY_WRITEABLE as c_int;
-            }
-        }
-    }
 }
 
 /// Forward GFT of a real signal. Default scheme `dyadic_dual_real` (output N-1).
@@ -186,7 +140,6 @@ fn inverse_real<'py>(
     bands_per_octave: usize,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let kind = window_kind(window_type)?;
-    let arr_ptr = coeffs.as_array_ptr();
     let c = coeffs.as_slice()?;
     if c.len() < 3 {
         return Err(PyValueError::new_err(format!(
@@ -200,11 +153,9 @@ fn inverse_real<'py>(
     let engine = build(s);
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![0.0f64; n];
-    {
-        let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-        py.allow_threads(|| engine.inverse_with(c, &mut out, &mut scratch))
-            .map_err(map_err)?;
-    }
+    engine.load_coeffs(c, &mut scratch).map_err(map_err)?;
+    py.allow_threads(|| engine.inverse_loaded(&mut out, &mut scratch))
+        .map_err(map_err)?;
     Ok(out.into_pyarray(py))
 }
 
@@ -321,16 +272,13 @@ impl PyGaussogram {
         if !self.invertible {
             return Err(PyValueError::new_err("this scheme is not invertible"));
         }
-        let arr_ptr = coeffs.as_array_ptr();
         let c = coeffs.as_slice()?;
         let mut out = vec![0.0f64; self.n];
         let engine = &self.engine;
         let scratch = &mut self.scratch;
-        {
-            let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-            py.allow_threads(|| engine.inverse_with(c, &mut out, scratch))
-                .map_err(map_err)?;
-        }
+        engine.load_coeffs(c, scratch).map_err(map_err)?;
+        py.allow_threads(|| engine.inverse_loaded(&mut out, scratch))
+            .map_err(map_err)?;
         Ok(out.into_pyarray(py))
     }
 }

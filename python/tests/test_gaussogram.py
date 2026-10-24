@@ -461,13 +461,16 @@ def test_concurrent_calls_on_shared_input_keep_it_writeable(scheme):
     expected = g.Gaussogram1d(n, scheme=scheme).forward(x)
     engines = [g.Gaussogram1d(n, scheme=scheme) for _ in range(4)]
     coeffs = expected[: n // 2 + 1] if scheme == "dyadic_real" else None
-    results = []
+    results, errors = [], []
 
     def work(e):
-        for _ in range(20):
-            results.append(e.forward(x))
-            if coeffs is not None:
-                e.inverse(coeffs)
+        try:
+            for _ in range(20):
+                results.append(e.forward(x))
+                if coeffs is not None:
+                    e.inverse(coeffs)
+        except BaseException as exc:  # surface worker failures in the test
+            errors.append(exc)
 
     threads = [threading.Thread(target=work, args=(e,)) for e in engines]
     for t in threads:
@@ -475,6 +478,9 @@ def test_concurrent_calls_on_shared_input_keep_it_writeable(scheme):
     for t in threads:
         t.join()
 
+    if errors:
+        raise errors[0]
+    assert len(results) == 4 * 20
     assert x.flags.writeable
     if coeffs is not None:
         assert coeffs.flags.writeable

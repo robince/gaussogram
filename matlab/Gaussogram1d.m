@@ -32,10 +32,10 @@ classdef Gaussogram1d < handle
     end
 
     properties (Access = private, Transient)
-        % Opaque GaussogramHandle*. Transient: a native pointer is meaningless
+        % Engine id issued by the MEX (0 = none). Transient: an id is meaningless
         % in another process or session, so saving/loading the object (or
         % sending it to parfor workers) restores 0 and the engine is rebuilt
-        % on first use instead of dereferencing a stale pointer.
+        % on first use instead of reusing an id from another session.
         ptr = uint64(0)
     end
 
