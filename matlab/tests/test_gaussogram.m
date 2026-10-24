@@ -19,6 +19,10 @@ passed = passed + run_case(@t_rejects_non_power_of_two);
 passed = passed + run_case(@t_handle_matches_function);
 passed = passed + run_case(@t_handle_reused_and_batch);
 passed = passed + run_case(@t_handle_rejects_wrong_length);
+passed = passed + run_case(@t_handle_survives_save_load);
+passed = passed + run_case(@t_stale_handle_rejected);
+passed = passed + run_case(@t_rejects_dyadic_complex_forward);
+passed = passed + run_case(@t_rejects_non_integer_n);
 
 fprintf('\nAll %d gaussogram test cases passed.\n', passed);
 end
@@ -193,4 +197,78 @@ catch
 end
 assert_true(threw, 'engine should reject a wrong-length signal');
 delete(eng);
+end
+
+function t_handle_survives_save_load()
+% The native pointer is Transient: a loaded copy (as parfor workers get) must
+% rebuild its engine rather than dereference the saved pointer value.
+n = 128;
+eng = Gaussogram1d(n);
+x = randn(n, 1);
+expected = eng.forward(x);
+f = [tempname, '.mat'];
+cleanup = onCleanup(@() delete(f));
+save(f, 'eng');
+delete(eng);
+s = load(f);
+assert_true(max(abs(s.eng.forward(x) - expected)) < 1e-12, ...
+    'a loaded engine should rebuild and match the original');
+delete(s.eng);
+end
+
+function t_stale_handle_rejected()
+% A raw handle value must be rejected once destroyed, and destroying it again
+% must be a no-op (not a double free).
+h = gaussogram_mex('create', 64, 0, 0, 0);
+gaussogram_mex('destroy', h);
+gaussogram_mex('destroy', h);
+threw = false;
+try
+    gaussogram_mex('forward_handle', h, ones(64, 1));
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:handle');
+end
+assert_true(threw, 'a destroyed handle should be rejected with gaussogram:handle');
+threw = false;
+try
+    gaussogram_mex('forward_handle', uint64(12345), ones(64, 1));
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:handle');
+end
+assert_true(threw, 'an arbitrary handle value should be rejected');
+% A new engine never takes over a destroyed handle's id, even if the
+% allocator reuses the destroyed engine's address.
+h2 = gaussogram_mex('create', 64, 0, 0, 0);
+assert_true(h2 ~= h, 'handle ids must not be reused');
+gaussogram_mex('destroy', h);   % stale: must not destroy h2's engine
+c = gaussogram_mex('forward_handle', h2, ones(64, 1));
+assert_true(numel(c) == 63, 'the live engine should be unaffected by a stale destroy');
+gaussogram_mex('destroy', h2);
+threw = false;
+try
+    gaussogram_mex('create', Inf, 0, 0, 0);
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:n');
+end
+assert_true(threw, 'a non-finite n should be rejected');
+end
+
+function t_rejects_dyadic_complex_forward()
+threw = false;
+try
+    gaussogram(ones(64, 1), 'scheme', 'dyadic_complex');
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:scheme');
+end
+assert_true(threw, 'dyadic_complex forward should be rejected clearly');
+end
+
+function t_rejects_non_integer_n()
+threw = false;
+try
+    gaussogram_output_len(64.5);
+catch
+    threw = true;
+end
+assert_true(threw, 'a non-integer n should be rejected');
 end

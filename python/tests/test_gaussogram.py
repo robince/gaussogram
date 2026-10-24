@@ -444,3 +444,72 @@ def test_bands_per_octave_one_matches_default_layout():
         np.testing.assert_array_equal(a.src_lo, b.src_lo)
         np.testing.assert_array_equal(a.width, b.width)
         np.testing.assert_array_equal(a.fcentre, b.fcentre)
+
+
+# ---- thread safety of the GIL-released paths ------------------------------
+
+
+@pytest.mark.parametrize("scheme", ["dyadic_dual_real", "dyadic_real"])
+def test_concurrent_calls_on_shared_input_keep_it_writeable(scheme):
+    # Several threads transforming the SAME input array through their own
+    # handles must leave it writeable and unmodified, and match a serial run.
+    import threading
+
+    n = 2**14
+    x = np.random.default_rng(0).standard_normal(n)
+    x0 = x.copy()
+    expected = g.Gaussogram1d(n, scheme=scheme).forward(x)
+    engines = [g.Gaussogram1d(n, scheme=scheme) for _ in range(4)]
+    coeffs = expected[: n // 2 + 1] if scheme == "dyadic_real" else None
+    results, errors = [], []
+
+    def work(e):
+        try:
+            for _ in range(20):
+                results.append(e.forward(x))
+                if coeffs is not None:
+                    e.inverse(coeffs)
+        except BaseException as exc:  # surface worker failures in the test
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(e,)) for e in engines]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    if errors:
+        raise errors[0]
+    assert len(results) == 4 * 20
+    assert x.flags.writeable
+    if coeffs is not None:
+        assert coeffs.flags.writeable
+    np.testing.assert_array_equal(x, x0)
+    for r in results:
+        np.testing.assert_array_equal(r, expected)
+
+
+def test_read_only_input_is_accepted_and_stays_read_only():
+    x = np.random.default_rng(1).standard_normal(64)
+    x.flags.writeable = False
+    g.gft1d_real(x)
+    g.Gaussogram1d(64).forward(x)
+    assert not x.flags.writeable
+    c = g.gft1d_real(np.random.default_rng(2).standard_normal(64), scheme="dyadic_real")
+    c.flags.writeable = False
+    g.inverse_real(c)
+    assert not c.flags.writeable
+
+
+def test_coefficient_geometry_dyadic_complex_signed_frequencies():
+    n = 64
+    geo = g.coefficient_geometry(n, scheme="dyadic_complex")
+    assert geo.freq.shape == (n,)
+    # A single tiling; bands from bin N/2 up are negative frequencies.
+    assert np.all(geo.tiling == 0)
+    lay = g.scheme_bands(n, scheme="dyadic_complex")
+    for lo, w, fc, off in zip(lay.src_lo, lay.width, lay.fcentre, lay.out_off):
+        sign = -1 if lo >= n // 2 else 1
+        assert np.all(geo.freq[off : off + w] == sign * fc)
+    adj = g.coefficient_adjacency(n, scheme="dyadic_complex")
+    assert not np.any(adj.edge_type == 2)

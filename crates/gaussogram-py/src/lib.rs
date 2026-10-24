@@ -8,17 +8,16 @@
 //! * the [`Gaussogram1d`] class — builds the engine, FFT plans, and scratch once
 //!   and reuses them across `.forward()` / `.inverse()` calls (the hot path).
 //!
-//! Zero-copy + GIL release: inputs are borrowed (never silently copied), and the
-//! GIL is released during the transform. To make that sound, the input array's
-//! NumPy `WRITEABLE` flag is cleared for the duration (see [`WriteableGuard`]),
-//! so a concurrent Python thread that tries to mutate it raises instead of
-//! racing the reader.
-
-use std::os::raw::c_int;
+//! Zero-copy + GIL release: inputs are borrowed from NumPy (never converted or
+//! copied at the interface), and the GIL is released during the transform.
+//! The FFTs work in place, so the core copies its input into scratch once per
+//! call anyway; that copy is done *while the GIL is held* (`load_real` /
+//! `load_complex` / `load_coeffs`), and the GIL-free part only touches scratch
+//! and the output. Python threads can therefore never race the reader, and
+//! the caller's array flags are never touched.
 
 use num_complex::Complex;
-use numpy::npyffi::{PyArrayObject, NPY_ARRAY_WRITEABLE};
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -76,37 +75,6 @@ fn build_scheme(
     s.map_err(map_err)
 }
 
-/// RAII guard that clears a NumPy array's `WRITEABLE` flag while the GIL is
-/// released for a transform, then restores the original flags on drop. This
-/// turns concurrent Python-side mutation *through this array object* into a
-/// hard error rather than a silent data race against the Rust reader. It is
-/// best-effort: other views or the base array sharing the same buffer keep
-/// their own flags and can still mutate the data.
-///
-/// Construct and drop this only while holding the GIL.
-struct WriteableGuard {
-    ptr: *mut PyArrayObject,
-    saved: c_int,
-}
-
-impl WriteableGuard {
-    /// SAFETY: `ptr` must be a valid NumPy array object and the GIL must be held.
-    unsafe fn lock(ptr: *mut PyArrayObject) -> Self {
-        let saved = (*ptr).flags;
-        (*ptr).flags = saved & !(NPY_ARRAY_WRITEABLE as c_int);
-        WriteableGuard { ptr, saved }
-    }
-}
-
-impl Drop for WriteableGuard {
-    fn drop(&mut self) {
-        // GIL is held here (drop runs back on the Python-facing side).
-        unsafe {
-            (*self.ptr).flags = self.saved;
-        }
-    }
-}
-
 /// Forward GFT of a real signal. Default scheme `dyadic_dual_real` (output N-1).
 ///
 /// Convenience wrapper: builds a fresh engine per call. For repeated transforms
@@ -122,7 +90,6 @@ fn gft1d_real<'py>(
     bands_per_octave: usize,
 ) -> PyResult<Bound<'py, PyArray1<Complex<f64>>>> {
     let kind = window_kind(window_type)?;
-    let arr_ptr = x.as_array_ptr();
     let signal = x.as_slice()?;
     let n = signal.len();
     let s = build_scheme(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
@@ -134,11 +101,9 @@ fn gft1d_real<'py>(
     let engine = build(s);
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![Complex::new(0.0, 0.0); engine.output_len()];
-    {
-        let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-        py.allow_threads(|| engine.forward_with(signal, &mut out, &mut scratch))
-            .map_err(map_err)?;
-    }
+    engine.load_real(signal, &mut scratch).map_err(map_err)?;
+    py.allow_threads(|| engine.forward_loaded(&mut out, &mut scratch))
+        .map_err(map_err)?;
     Ok(out.into_pyarray(py))
 }
 
@@ -152,18 +117,15 @@ fn gft1d<'py>(
     window_type: &str,
 ) -> PyResult<Bound<'py, PyArray1<Complex<f64>>>> {
     let kind = window_kind(window_type)?;
-    let arr_ptr = z.as_array_ptr();
     let signal = z.as_slice()?;
     let n = signal.len();
     let s = build_scheme("dyadic_complex", n, kind, false, 1)?;
     let engine = build(s);
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![Complex::new(0.0, 0.0); engine.output_len()];
-    {
-        let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-        py.allow_threads(|| engine.forward_complex_with(signal, &mut out, &mut scratch))
-            .map_err(map_err)?;
-    }
+    engine.load_complex(signal, &mut scratch).map_err(map_err)?;
+    py.allow_threads(|| engine.forward_complex_loaded(&mut out, &mut scratch))
+        .map_err(map_err)?;
     Ok(out.into_pyarray(py))
 }
 
@@ -178,9 +140,8 @@ fn inverse_real<'py>(
     bands_per_octave: usize,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let kind = window_kind(window_type)?;
-    let arr_ptr = coeffs.as_array_ptr();
     let c = coeffs.as_slice()?;
-    if c.len() < 2 {
+    if c.len() < 3 {
         return Err(PyValueError::new_err(format!(
             "coeffs must have length N/2 + 1 >= 3 (got {})",
             c.len()
@@ -192,11 +153,9 @@ fn inverse_real<'py>(
     let engine = build(s);
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![0.0f64; n];
-    {
-        let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-        py.allow_threads(|| engine.inverse_with(c, &mut out, &mut scratch))
-            .map_err(map_err)?;
-    }
+    engine.load_coeffs(c, &mut scratch).map_err(map_err)?;
+    py.allow_threads(|| engine.inverse_loaded(&mut out, &mut scratch))
+        .map_err(map_err)?;
     Ok(out.into_pyarray(py))
 }
 
@@ -260,8 +219,8 @@ impl PyGaussogram {
     }
 
     /// Forward transform of a real signal of length `n`, reusing the handle's
-    /// plans and scratch. The input is borrowed (not copied) and locked
-    /// read-only while the GIL is released.
+    /// plans and scratch. The input is borrowed from NumPy and copied into the
+    /// handle's scratch (the FFT works in place) before the GIL is released.
     fn forward<'py>(
         &mut self,
         py: Python<'py>,
@@ -272,17 +231,14 @@ impl PyGaussogram {
                 "this handle uses a complex-input scheme; use forward_complex",
             ));
         }
-        let arr_ptr = x.as_array_ptr();
         let signal = x.as_slice()?;
         let mut out = vec![Complex::new(0.0, 0.0); self.output_len];
         // Disjoint field borrows: engine (shared) + scratch (exclusive).
         let engine = &self.engine;
         let scratch = &mut self.scratch;
-        {
-            let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-            py.allow_threads(|| engine.forward_with(signal, &mut out, scratch))
-                .map_err(map_err)?;
-        }
+        engine.load_real(signal, scratch).map_err(map_err)?;
+        py.allow_threads(|| engine.forward_loaded(&mut out, scratch))
+            .map_err(map_err)?;
         Ok(out.into_pyarray(py))
     }
 
@@ -297,16 +253,13 @@ impl PyGaussogram {
                 "this handle uses a real-input scheme; use forward",
             ));
         }
-        let arr_ptr = z.as_array_ptr();
         let signal = z.as_slice()?;
         let mut out = vec![Complex::new(0.0, 0.0); self.output_len];
         let engine = &self.engine;
         let scratch = &mut self.scratch;
-        {
-            let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-            py.allow_threads(|| engine.forward_complex_with(signal, &mut out, scratch))
-                .map_err(map_err)?;
-        }
+        engine.load_complex(signal, scratch).map_err(map_err)?;
+        py.allow_threads(|| engine.forward_complex_loaded(&mut out, scratch))
+            .map_err(map_err)?;
         Ok(out.into_pyarray(py))
     }
 
@@ -319,16 +272,13 @@ impl PyGaussogram {
         if !self.invertible {
             return Err(PyValueError::new_err("this scheme is not invertible"));
         }
-        let arr_ptr = coeffs.as_array_ptr();
         let c = coeffs.as_slice()?;
         let mut out = vec![0.0f64; self.n];
         let engine = &self.engine;
         let scratch = &mut self.scratch;
-        {
-            let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-            py.allow_threads(|| engine.inverse_with(c, &mut out, scratch))
-                .map_err(map_err)?;
-        }
+        engine.load_coeffs(c, scratch).map_err(map_err)?;
+        py.allow_threads(|| engine.inverse_loaded(&mut out, scratch))
+            .map_err(map_err)?;
         Ok(out.into_pyarray(py))
     }
 }

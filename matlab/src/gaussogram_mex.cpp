@@ -13,9 +13,12 @@ extern "C" {
 #include "gaussogram.h"
 }
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <limits>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -76,8 +79,10 @@ size_t scalar_size(const mxArray* arg, const char* id, const char* name) {
         mexErrMsgIdAndTxt(id, "%s must be a real numeric scalar.", name);
     }
     double v = mxGetScalar(arg);
-    if (v < 0.0) {
-        mexErrMsgIdAndTxt(id, "%s must be nonnegative.", name);
+    // Also rejects NaN and Inf; the upper bound keeps the cast defined.
+    if (!(v >= 0.0) || !std::isfinite(v) || v != std::floor(v) ||
+        v >= static_cast<double>(std::numeric_limits<size_t>::max())) {
+        mexErrMsgIdAndTxt(id, "%s must be a nonnegative integer.", name);
     }
     return static_cast<size_t>(v);
 }
@@ -161,14 +166,33 @@ mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in, Handle*
     return result;
 }
 
-// Read a persistent engine handle passed back from MATLAB as a uint64 scalar.
-GaussogramHandle* read_handle(const mxArray* arg) {
-    require(mxIsUint64(arg) && mxIsScalar(arg), "gaussogram:handle",
+// Engines created by op 'create' and not yet destroyed, keyed by handle id.
+// MATLAB holds handles as plain uint64 values, which can outlive their engine
+// (a copied value after 'destroy') or come from elsewhere entirely. Ids are
+// never reused (unlike engine addresses, which the allocator may hand out
+// again), so a stale id can never resolve to, or destroy, a later engine.
+std::unordered_map<uint64_t, GaussogramHandle*>& live_handles() {
+    static std::unordered_map<uint64_t, GaussogramHandle*> handles;
+    return handles;
+}
+
+uint64_t next_handle_id() {
+    static uint64_t next = 0;
+    return ++next;  // 0 is never issued; Gaussogram1d uses it for "no engine"
+}
+
+uint64_t handle_id_from_arg(const mxArray* arg) {
+    require(mxIsUint64(arg) && mxIsScalar(arg) && !mxIsComplex(arg), "gaussogram:handle",
             "handle must be a uint64 scalar.");
-    uint64_t v = *static_cast<const uint64_t*>(mxGetData(arg));
-    GaussogramHandle* h = reinterpret_cast<GaussogramHandle*>(static_cast<uintptr_t>(v));
-    require(h != nullptr, "gaussogram:handle", "handle is null (already destroyed?).");
-    return h;
+    return *static_cast<const uint64_t*>(mxGetData(arg));
+}
+
+// Resolve a persistent engine handle passed back from MATLAB.
+GaussogramHandle* read_handle(const mxArray* arg) {
+    auto it = live_handles().find(handle_id_from_arg(arg));
+    require(it != live_handles().end(), "gaussogram:handle",
+            "handle is not a live gaussogram engine (destroyed, or loaded from a file?).");
+    return it->second;
 }
 
 // op = 'forward': forward transform of a real signal matrix (n x count;
@@ -191,7 +215,7 @@ void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     (void)nlhs;
 }
 
-// op = 'create': build a persistent engine and return its pointer as a uint64
+// op = 'create': build a persistent engine and return its id as a uint64
 // scalar (plhs[0]); optionally its output_len (plhs[1]). mexLock keeps the MEX
 // resident so live handles are not orphaned by `clear`. Pair with 'destroy'.
 void op_create(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
@@ -203,11 +227,12 @@ void op_create(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
 
     GaussogramHandle* h = make_handle(scheme_id, n, window_id, nyquist);
+    uint64_t id = next_handle_id();
+    live_handles().emplace(id, h);
     mexLock();
 
     plhs[0] = mxCreateNumericMatrix(1, 1, mxUINT64_CLASS, mxREAL);
-    *static_cast<uint64_t*>(mxGetData(plhs[0])) =
-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(h));
+    *static_cast<uint64_t*>(mxGetData(plhs[0])) = id;
     if (nlhs > 1) {
         plhs[1] = mxCreateDoubleScalar(static_cast<double>(gaussogram_output_len(h)));
     }
@@ -225,11 +250,11 @@ void op_forward_handle(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[
 // op = 'destroy': free a persistent engine and release one mexLock.
 void op_destroy(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 2, "gaussogram:nrhs", "destroy expects (op, handle).");
-    require(mxIsUint64(prhs[1]) && mxIsScalar(prhs[1]), "gaussogram:handle",
-            "handle must be a uint64 scalar.");
-    uint64_t v = *static_cast<const uint64_t*>(mxGetData(prhs[1]));
-    GaussogramHandle* h = reinterpret_cast<GaussogramHandle*>(static_cast<uintptr_t>(v));
-    if (h != nullptr) {
+    // Unknown or already-destroyed handles are a no-op, never a double free.
+    auto it = live_handles().find(handle_id_from_arg(prhs[1]));
+    if (it != live_handles().end()) {
+        GaussogramHandle* h = it->second;
+        live_handles().erase(it);
         gaussogram_destroy(h);
         if (mexIsLocked()) {
             mexUnlock();

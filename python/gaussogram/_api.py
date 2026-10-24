@@ -392,17 +392,35 @@ def to_grid(
 # values are untouched and only the basis geometry is exposed.
 
 
+def _band_freq_and_tiling(lay: BandLayout, n: int, scheme: str):
+    """Per-band signed centre frequency and tiling id.
+
+    Real schemes pack tiling A first (``N/2+1`` coefficients), then tiling B.
+    ``dyadic_complex`` is a single tiling over the full spectrum: its bands from
+    bin ``N/2`` up are negative frequencies, whose ``fcentre`` is stored as a
+    magnitude.
+    """
+    if scheme == "dyadic_complex":
+        freqs = [-int(fc) if int(lo) >= n // 2 else int(fc)
+                 for lo, fc in zip(lay.src_lo, lay.fcentre)]
+        return freqs, [0] * len(freqs)
+    a_len = n // 2 + 1
+    return ([int(fc) for fc in lay.fcentre],
+            [0 if int(off) < a_len else 1 for off in lay.out_off])
+
+
 class CoeffGeometry(NamedTuple):
     """Per-coefficient time-frequency geometry (parallel arrays, length =
     output_len). Each coefficient owns a tile of size ``dt`` (time) x ``df``
     (frequency); ``dt * df == n`` for every tile."""
 
     time: NDArray[np.float64]   #: tile centre time (samples) = j·n/w, in [0, n)
-    freq: NDArray[np.float64]   #: tile centre frequency (bins)
+    freq: NDArray[np.float64]   #: tile centre frequency (bins; < 0 for the
+                                #: negative-frequency bands of dyadic_complex)
     dt: NDArray[np.float64]     #: time extent (samples) = n / width
     df: NDArray[np.float64]     #: frequency extent (bins) = width
-    logf: NDArray[np.float64]   #: log2(freq), DC floored to log2(0.5) = -1
-    level: NDArray[np.int64]    #: octave index = floor(log2(centre freq))
+    logf: NDArray[np.float64]   #: log2(max(|freq|, 0.5)); DC = -1
+    level: NDArray[np.int64]    #: octave index = floor(log2(max(|centre freq|, 1)))
     sub: NDArray[np.int64]      #: within-octave sub-band rank (low->high frequency)
     tiling: NDArray[np.int64]   #: 0 = tiling A, 1 = tiling B (dual scheme)
     band: NDArray[np.int64]     #: index of the band each coefficient belongs to
@@ -424,7 +442,6 @@ def coefficient_geometry(
     together locate a coefficient on the (log-frequency, sub-band) lattice.
     """
     lay = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
-    a_len = n // 2 + 1
     total = int((lay.out_off + lay.width).max())
     time = np.zeros(total)
     freq = np.zeros(total)
@@ -436,31 +453,32 @@ def coefficient_geometry(
     band = np.zeros(total, dtype=np.int64)
 
     # Per-band octave index and tiling, then the within-octave rank: bands that
-    # share a (tiling, octave) are ranked low->high by their source frequency.
+    # share a (tiling, sign, octave) are ranked low->high by source frequency.
     nb = len(lay.width)
-    b_octave = [int(np.floor(np.log2(max(int(fc), 1)))) for fc in lay.fcentre]
-    b_tiling = [0 if int(off) < a_len else 1 for off in lay.out_off]
+    b_freq, b_tiling = _band_freq_and_tiling(lay, n, scheme)
+    b_octave = [int(np.floor(np.log2(max(abs(f), 1)))) for f in b_freq]
     b_sub = [0] * nb
-    groups: dict[tuple[int, int], list[int]] = {}
+    groups: dict[tuple[int, bool, int], list[int]] = {}
     for bi in range(nb):
-        groups.setdefault((b_tiling[bi], b_octave[bi]), []).append(bi)
+        key = (b_tiling[bi], b_freq[bi] < 0, b_octave[bi])
+        groups.setdefault(key, []).append(bi)
     for members in groups.values():
         for rank, bi in enumerate(sorted(members, key=lambda j: int(lay.src_lo[j]))):
             b_sub[bi] = rank
 
-    for bi, (w, fc, off) in enumerate(zip(lay.width, lay.fcentre, lay.out_off)):
-        w, fc, off = int(w), int(fc), int(off)
+    for bi, (w, off) in enumerate(zip(lay.width, lay.out_off)):
+        w, off = int(w), int(off)
         j = np.arange(w)
         idx = off + j
         time[idx] = j * (n / w)
-        freq[idx] = fc
+        freq[idx] = b_freq[bi]
         dt[idx] = n / w
         df[idx] = w
         level[idx] = b_octave[bi]
         sub[idx] = b_sub[bi]
         tiling[idx] = b_tiling[bi]
         band[idx] = bi
-    logf = np.log2(np.maximum(freq, 0.5))
+    logf = np.log2(np.maximum(np.abs(freq), 0.5))
     return CoeffGeometry(time, freq, dt, df, logf, level, sub, tiling, band)
 
 
@@ -501,18 +519,16 @@ def coefficient_adjacency(
       (the redundancy of the ``dyadic_dual_real`` scheme; empty otherwise).
     """
     lay = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
-    a_len = n // 2 + 1
+    b_freq, b_tiling = _band_freq_and_tiling(lay, n, scheme)
     bands = []
-    for bi, (lo, w, fc, off) in enumerate(
-        zip(lay.src_lo, lay.width, lay.fcentre, lay.out_off)
-    ):
-        lo, w, fc, off = int(lo), int(w), int(fc), int(off)
+    for bi, (lo, w, off) in enumerate(zip(lay.src_lo, lay.width, lay.out_off)):
+        lo, w, off = int(lo), int(w), int(off)
         bands.append(
-            dict(bi=bi, lo=lo, hi=lo + w, w=w, fc=fc, off=off,
+            dict(bi=bi, lo=lo, hi=lo + w, w=w, fc=b_freq[bi], off=off,
                  gidx=off + np.arange(w),
                  tcent=np.arange(w) * (n / w),
                  dt=n / w,
-                 tiling=0 if off < a_len else 1)
+                 tiling=b_tiling[bi])
         )
 
     src, dst, typ = [], [], []
