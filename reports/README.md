@@ -93,7 +93,7 @@ Temporal width (FWHM, samples; **lower = better time isolation**):
 | `pywt` / `dtcwt` | 16 / 17 | 6 / 7 | **2 / 3** |
 | `pou_A` | 13 | 7 | 7 |
 | `two_channel_ramp` | 23 | 12 | 10 |
-| `gaussogram_dual` | 28 | 13 | 8 |
+| `gaussogram_dual` | 27 | 11 | 9 |
 | **`nsgt` (4 bpo)** | **89** | **33** | **18** |
 | `cwt:GMW` | 65 | 25 | 15 |
 | `stft` | 43 | 43 | 43 (uniform) |
@@ -107,12 +107,12 @@ rises, exactly as intended.
 
 ![chirp 15→85 across transforms](figures/cross_chirp_low.png)
 
-Down-chirp (15→85) ridge MAE (bins, lower = better):
+Up-chirp (15→85) ridge MAE (bins, lower = better):
 
 | method | MAE | | method | MAE |
 |---|---:|---|---|---:|
 | `stft` | 0.25 | | `nsgt` | 3.04 |
-| `cwt:GMW` | 0.42 | | `gaussogram_dual` | 4.60 |
+| `cwt:GMW` | 0.42 | | `gaussogram_dual` | 4.23 |
 | `two_channel_ramp` | 1.48 | | `pou_A` | 4.82 |
 | `ssq_cwt` | 3.34 | | `dtcwt` | 9.86 |
 | `ssq_stft` | 0.28 | | `pywt` | 12.23 |
@@ -130,7 +130,7 @@ Down-chirp (15→85) ridge MAE (bins, lower = better):
   handling, and the only ones carrying the S-transform's absolute phase.
 - **`gaussogram_dual`'s** apparent edge in earlier single-signal tests was partly
   because a tone on bin 64 sits exactly on one of its offset bands; on the
-  down-chirp (no such coincidence) `two_channel_ramp` is clearly better.
+  up-chirp (no such coincidence) `two_channel_ramp` is clearly better.
 - **CWT/STFT/synchrosqueezing** give the cleanest pictures but at 450×+
   redundancy.
 
