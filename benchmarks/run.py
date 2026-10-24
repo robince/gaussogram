@@ -89,7 +89,10 @@ def prepare(case, x):
     one_shot = None
     if m in ('gaussogram', 'grid'):
         import gaussogram as g
-        setup = lambda: g.Gaussogram1d(n, **s)
+        # Engines are cached process-wide; clear first so setup is cold.
+        def setup():
+            g._native.clear_engine_cache()
+            return g.Gaussogram1d(n, **s)
         handle = setup()
         forward = lambda: handle.forward(x)
         one_shot = lambda: g.gft1d_real(x, **s)

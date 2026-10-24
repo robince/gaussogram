@@ -3,7 +3,7 @@
 //! per-scheme branching.
 
 use crate::error::GaussogramError;
-use crate::window::{box_band_screen, complex_global_screen, gaussian_band_screen, WindowKind};
+use crate::window::{box_band_screen, complex_global_screen, GaussianScreens, WindowKind};
 
 /// A band reads the contiguous spectrum slice `[src_lo, src_hi)` and writes its
 /// `width` complex outputs to `[out_off, out_off + width)` of the packed buffer.
@@ -76,10 +76,10 @@ fn split_pow2(lo: usize, hi: usize, bpo: usize) -> Vec<(usize, usize)> {
     (0..k).map(|i| (lo + i * sub, lo + (i + 1) * sub)).collect()
 }
 
-fn make_window(kind: WindowKind, n: usize, lo: usize, width: usize) -> Window {
+fn make_window(kind: WindowKind, screens: &mut GaussianScreens, lo: usize, width: usize) -> Window {
     let fcentre = lo + width / 2;
     let screen = match kind {
-        WindowKind::Gaussian => gaussian_band_screen(n, fcentre as i64, width),
+        WindowKind::Gaussian => screens.band_screen(fcentre as i64, width),
         WindowKind::Box => box_band_screen(width),
     };
     Window {
@@ -94,7 +94,12 @@ fn make_window(kind: WindowKind, n: usize, lo: usize, width: usize) -> Window {
 /// Each dyadic octave is subdivided into `min(bands_per_octave, octave_width)`
 /// equal sub-bands (`bpo = 1` reproduces the single-band-per-octave cover).
 /// Returns the bands (out_off filled sequentially from 0).
-fn tiling_a(n: usize, kind: WindowKind, bpo: usize) -> (Vec<Band>, Vec<Window>) {
+fn tiling_a(
+    n: usize,
+    kind: WindowKind,
+    bpo: usize,
+    screens: &mut GaussianScreens,
+) -> (Vec<Band>, Vec<Window>) {
     let mut bands = Vec::new();
     let mut windows = Vec::new();
     let mut out_off = 0usize;
@@ -102,8 +107,9 @@ fn tiling_a(n: usize, kind: WindowKind, bpo: usize) -> (Vec<Band>, Vec<Window>) 
                 hi: usize,
                 bands: &mut Vec<Band>,
                 windows: &mut Vec<Window>,
-                out_off: &mut usize| {
-        windows.push(make_window(kind, n, lo, hi - lo));
+                out_off: &mut usize,
+                screens: &mut GaussianScreens| {
+        windows.push(make_window(kind, screens, lo, hi - lo));
         bands.push(Band {
             src_lo: lo,
             src_hi: hi,
@@ -118,7 +124,7 @@ fn tiling_a(n: usize, kind: WindowKind, bpo: usize) -> (Vec<Band>, Vec<Window>) 
     let mut edge = 1usize;
     while edge <= n / 4 {
         for (lo, hi) in split_pow2(prev, edge, bpo) {
-            push(lo, hi, &mut bands, &mut windows, &mut out_off);
+            push(lo, hi, &mut bands, &mut windows, &mut out_off, screens);
         }
         prev = edge;
         edge *= 2;
@@ -129,7 +135,7 @@ fn tiling_a(n: usize, kind: WindowKind, bpo: usize) -> (Vec<Band>, Vec<Window>) 
     let last = subs.len() - 1;
     for (i, (lo, hi)) in subs.into_iter().enumerate() {
         let hi = if i == last { n / 2 + 1 } else { hi };
-        push(lo, hi, &mut bands, &mut windows, &mut out_off);
+        push(lo, hi, &mut bands, &mut windows, &mut out_off, screens);
     }
     (bands, windows)
 }
@@ -157,7 +163,7 @@ pub fn dyadic_real_with(
             got: n,
         });
     }
-    let (bands, windows) = tiling_a(n, kind, bands_per_octave);
+    let (bands, windows) = tiling_a(n, kind, bands_per_octave, &mut GaussianScreens::new(n));
     let output_len = bands.iter().map(Band::width).sum();
     Ok(Scheme {
         name: "dyadic_real",
@@ -195,7 +201,8 @@ pub fn dyadic_dual_real_with(
             got: n,
         });
     }
-    let (mut bands, mut windows) = tiling_a(n, kind, bands_per_octave);
+    let mut screens = GaussianScreens::new(n);
+    let (mut bands, mut windows) = tiling_a(n, kind, bands_per_octave, &mut screens);
 
     // Apply optional Nyquist flat-top to tiling A's top band.
     if nyquist_flat_top {
@@ -225,7 +232,7 @@ pub fn dyadic_dual_real_with(
             let centre = b + m * s;
             let lo = centre - s / 2;
             let hi = centre + s / 2;
-            let w = make_window(kind, n, lo, hi - lo); // fcentre = lo + s/2 = centre
+            let w = make_window(kind, &mut screens, lo, hi - lo); // fcentre = lo + s/2 = centre
             windows.push(w);
             bands.push(Band {
                 src_lo: lo,
