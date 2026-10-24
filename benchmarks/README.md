@@ -52,7 +52,9 @@ disposal. Garbage collection is left at its normal setting. No timing thresholds
 are used in tests.
 
 Gaussogram reports reusable-handle **forward**, fresh handle **setup**, and
-**one_shot** calls separately. DTCWT/NSGT expose separate constructor timings too.
+**one_shot** calls separately. Built engines are cached process-wide, so
+**setup** clears that cache first and times cold construction, while
+**one_shot** reflects the usual warm-cache call. DTCWT/NSGT expose separate constructor timings too.
 For APIs without reusable plans, library setup remains inside forward calls.
 Warm timings exclude lazy initialization/JIT compilation; setup measurements are
 also warm, not fresh-process import or first-ever FFT planning measurements.

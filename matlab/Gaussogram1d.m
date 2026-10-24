@@ -11,7 +11,9 @@ classdef Gaussogram1d < handle
 %
 %   The engine is fixed to length N and the scheme/window chosen at
 %   construction. forward() accepts a length-N column/row vector (one segment)
-%   or an N x count matrix (a batch, transformed in parallel). The handle is
+%   or an N x count matrix (a batch, transformed in parallel on one thread per
+%   CPU; inside parfor workers, setenv('RAYON_NUM_THREADS', '1') before the
+%   first transform to avoid oversubscription). The handle is
 %   freed automatically when the object is cleared or goes out of scope; you may
 %   also call delete(eng) explicitly.
 %
@@ -31,29 +33,44 @@ classdef Gaussogram1d < handle
         nyquist_flat_top   % logical
     end
 
-    properties (Access = private)
-        ptr = uint64(0)    % opaque GaussogramHandle* (0 once destroyed)
+    properties (Access = private, Transient)
+        % Engine id issued by the MEX (0 = none). Transient: an id is meaningless
+        % in another process or session, so saving/loading the object (or
+        % sending it to parfor workers) restores 0 and the engine is rebuilt
+        % on first use instead of reusing an id from another session.
+        ptr = uint64(0)
+    end
+
+    methods (Access = private)
+        function olen = create_engine(obj)
+            if strcmpi(obj.scheme, 'dyadic_complex')
+                error('gaussogram:scheme', ...
+                    "'dyadic_complex' (complex input) is not available from MATLAB yet.");
+            end
+            [scheme_id, window_id] = gaussogram_ids(obj.scheme, obj.window);
+            gaussogram_check_built();
+            [h, olen] = gaussogram_mex('create', obj.n, scheme_id, window_id, ...
+                double(obj.nyquist_flat_top));
+            obj.ptr = h;
+        end
     end
 
     methods
         function obj = Gaussogram1d(n, varargin)
             opts = gaussogram_parse_opts(varargin{:});
-            [scheme_id, window_id] = gaussogram_ids(opts.scheme, opts.window);
-            gaussogram_check_built();
-            [h, olen] = gaussogram_mex('create', double(n), scheme_id, window_id, ...
-                double(opts.nyquist_flat_top));
-            obj.ptr = h;
             obj.n = double(n);
-            obj.output_len = olen;
             obj.scheme = opts.scheme;
             obj.window = opts.window;
             obj.nyquist_flat_top = opts.nyquist_flat_top;
+            obj.output_len = obj.create_engine();
         end
 
         function coeffs = forward(obj, signal)
         %FORWARD  Transform a length-N segment (or N x count batch).
             if obj.ptr == 0
-                error('gaussogram:destroyed', 'This Gaussogram1d engine has been destroyed.');
+                % Only reachable after load / parfor transfer (Transient ptr):
+                % a deleted handle object cannot have its methods called.
+                obj.create_engine();
             end
             if ~isa(signal, 'double') || ~isreal(signal) || issparse(signal)
                 error('gaussogram:signal', 'signal must be a real full double array.');

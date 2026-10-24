@@ -3,13 +3,14 @@
 
 use std::panic;
 use std::slice;
+use std::sync::{Arc, Mutex};
 
 use num_complex::Complex;
 
 use gaussogram_core::{
-    build, complex_partitions, dyadic_complex_with, dyadic_dual_real_with, dyadic_real_with,
-    legacy_real_partitions, Gaussogram1d, WindowKind, STATUS_INTERNAL, STATUS_OK,
-    STATUS_UNKNOWN_SCHEME, STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
+    cached_engine, complex_partitions, legacy_real_partitions, Gaussogram1d, SchemeKind,
+    SchemeSpec, Scratch, WindowKind, STATUS_INTERNAL, STATUS_OK, STATUS_UNKNOWN_SCHEME,
+    STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
 };
 
 pub use gaussogram_core::{
@@ -18,36 +19,54 @@ pub use gaussogram_core::{
 };
 
 /// Opaque handle wrapping a constructed engine so callers build once and
-/// transform many segments (plan reuse across calls).
+/// transform many segments (plan reuse across calls). Engines are immutable and
+/// come from the core's process-wide cache, so creating a handle for a
+/// recently used configuration (e.g. the MEX one-shot path) is cheap.
 pub struct GaussogramHandle {
-    engine: Gaussogram1d,
+    engine: Arc<Gaussogram1d>,
+    /// Reused across single-segment calls so a persistent handle does not
+    /// allocate per transform. Behind a mutex because the C API takes
+    /// `const GaussogramHandle*`; if a caller does use one handle from several
+    /// threads at once, the losers fall back to a temporary scratch.
+    scratch: Mutex<Scratch>,
 }
 
-fn scheme_from_id(
+impl GaussogramHandle {
+    fn with_scratch<R>(&self, f: impl FnOnce(&Gaussogram1d, &mut Scratch) -> R) -> R {
+        match self.scratch.try_lock() {
+            Ok(mut scratch) => f(&self.engine, &mut scratch),
+            Err(_) => f(&self.engine, &mut self.engine.alloc_scratch()),
+        }
+    }
+}
+
+fn engine_from_id(
     scheme_id: i32,
     n: usize,
-    kind: WindowKind,
+    window: WindowKind,
     nyquist_flat_top: bool,
-) -> Result<gaussogram_core::Scheme, i32> {
-    // The C ABI does not yet expose bands_per_octave; the one-band-per-octave
-    // cover (bpo = 1) keeps the existing ABI and golden parity unchanged.
-    let s = match scheme_id {
-        0 => dyadic_dual_real_with(n, kind, nyquist_flat_top, 1),
-        1 | 2 => {
-            // Reject options the scheme does not support instead of silently
-            // ignoring them.
-            if nyquist_flat_top {
-                return Err(STATUS_UNSUPPORTED_OPTION);
-            }
-            if scheme_id == 1 {
-                dyadic_real_with(n, kind, 1)
-            } else {
-                dyadic_complex_with(n, kind)
-            }
-        }
+) -> Result<Arc<Gaussogram1d>, i32> {
+    let kind = match scheme_id {
+        0 => SchemeKind::DyadicDualReal,
+        1 => SchemeKind::DyadicReal,
+        2 => SchemeKind::DyadicComplex,
         _ => return Err(STATUS_UNKNOWN_SCHEME),
     };
-    s.map_err(|e| e.status_code())
+    // Reject options the scheme does not support instead of silently
+    // ignoring them.
+    if nyquist_flat_top && kind != SchemeKind::DyadicDualReal {
+        return Err(STATUS_UNSUPPORTED_OPTION);
+    }
+    // The C ABI does not yet expose bands_per_octave; the one-band-per-octave
+    // cover (bpo = 1) keeps the existing ABI and golden parity unchanged.
+    cached_engine(SchemeSpec {
+        kind,
+        n,
+        window,
+        nyquist_flat_top,
+        bands_per_octave: 1,
+    })
+    .map_err(|e| e.status_code())
 }
 
 fn kind_from_id(window_id: i32) -> Option<WindowKind> {
@@ -76,12 +95,12 @@ pub unsafe extern "C" fn gaussogram_create(
         let Some(kind) = kind_from_id(window_id) else {
             return STATUS_UNKNOWN_WINDOW;
         };
-        let scheme = match scheme_from_id(scheme_id, n, kind, nyquist_flat_top != 0) {
-            Ok(s) => s,
+        let engine = match engine_from_id(scheme_id, n, kind, nyquist_flat_top != 0) {
+            Ok(e) => e,
             Err(status) => return status,
         };
-        let engine = build(scheme);
-        let boxed = Box::new(GaussogramHandle { engine });
+        let scratch = Mutex::new(engine.alloc_scratch());
+        let boxed = Box::new(GaussogramHandle { engine, scratch });
         unsafe {
             *out_handle = Box::into_raw(boxed);
         }
@@ -130,11 +149,11 @@ pub unsafe extern "C" fn gaussogram_forward_real(
         if handle.is_null() || signal.is_null() || out.is_null() {
             return STATUS_INTERNAL;
         }
-        let engine = unsafe { &(*handle).engine };
+        let handle = unsafe { &*handle };
         let sig = unsafe { slice::from_raw_parts(signal, signal_len) };
         let out_complex =
             unsafe { slice::from_raw_parts_mut(out as *mut Complex<f64>, out_len_complex) };
-        match engine.forward(sig, out_complex) {
+        match handle.with_scratch(|engine, scratch| engine.forward_with(sig, out_complex, scratch)) {
             Ok(()) => STATUS_OK,
             Err(e) => e.status_code(),
         }
@@ -243,10 +262,10 @@ pub unsafe extern "C" fn gaussogram_inverse_real(
         if handle.is_null() || coeffs.is_null() || out.is_null() {
             return STATUS_INTERNAL;
         }
-        let engine = unsafe { &(*handle).engine };
+        let handle = unsafe { &*handle };
         let c = unsafe { slice::from_raw_parts(coeffs as *const Complex<f64>, coeffs_len_complex) };
         let out_real = unsafe { slice::from_raw_parts_mut(out, out_len) };
-        match engine.inverse(c, out_real) {
+        match handle.with_scratch(|engine, scratch| engine.inverse_with(c, out_real, scratch)) {
             Ok(()) => STATUS_OK,
             Err(e) => e.status_code(),
         }

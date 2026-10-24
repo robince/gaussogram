@@ -24,6 +24,10 @@ function coeffs = gaussogram(signal, varargin)
 
 opts = gaussogram_parse_opts(varargin{:});
 [scheme_id, window_id] = gaussogram_ids(opts.scheme, opts.window);
+if scheme_id == 2
+    error('gaussogram:scheme', ...
+        "'dyadic_complex' (complex input) is not available from MATLAB yet.");
+end
 
 if ~isa(signal, 'double') || ~isreal(signal) || issparse(signal)
     error('gaussogram:signal', 'signal must be a real full double array.');
