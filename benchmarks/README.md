@@ -3,28 +3,27 @@
 Run from the repository root, using a release-built extension:
 
 ```sh
-uv sync --extra benchmark --extra test
-uv pip install maturin
-# If a conda environment is also active, unset CONDA_PREFIX for maturin.
-uv run maturin develop --release
-uv run python benchmarks/run.py
-uv run python benchmarks/report.py reports/benchmarks/latest/results.json
+# Builds the extension in release mode through the maturin build backend.
+uv sync --all-extras --reinstall-package gaussogram
+uv run --no-sync python benchmarks/run.py
+uv run --no-sync python benchmarks/report.py reports/benchmarks/latest/results.json
 ```
 
 `run.py` has no dependency on the plotting code; `report.py` can regenerate plots
-from saved results without rerunning any transforms. For an existing environment,
-install `.[benchmark,test]` and use that environment's Python throughout.
+from saved results without rerunning any transforms. To use another environment
+instead of the project's `.venv`, install `.[benchmark,test]` into it and run its
+`python` in place of `uv run --no-sync python` throughout.
 
 ```sh
 # Full Gaussogram parameter sweep and baseline comparisons (can take minutes).
-python benchmarks/run.py --preset full --output reports/benchmarks/full
+uv run --no-sync python benchmarks/run.py --preset full --output reports/benchmarks/full
 # Larger compact transforms; avoid requesting dense transforms at these lengths.
-python benchmarks/run.py --methods gaussogram dwt --sizes 16384 65536 262144
+uv run --no-sync python benchmarks/run.py --methods gaussogram dwt --sizes 16384 65536 262144
 # Display cost, measured on precomputed coefficients.
-python benchmarks/run.py --methods grid
+uv run --no-sync python benchmarks/run.py --methods grid
 # Optional comparisons using the repository's dev dependencies.
-python benchmarks/run.py --methods dtcwt nsgt ssq_cwt
-python -m pytest benchmarks
+uv run --no-sync python benchmarks/run.py --methods dtcwt nsgt ssq_cwt
+uv run --no-sync python -m pytest benchmarks
 ```
 
 Quick: N=256, 1024, 4096; two real Gaussogram schemes at 1 and 4 bands/octave.

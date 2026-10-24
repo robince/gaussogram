@@ -74,12 +74,17 @@ write-up (including the invertible `dyadic_real` version).
 
 ## Install & quick start
 
-Build the native extension (needs a Rust toolchain and
-[maturin](https://www.maturin.rs/)):
+Build the native extension into the project environment with
+[uv](https://docs.astral.sh/uv/) (needs a Rust toolchain; uv builds it in
+release mode through the [maturin](https://www.maturin.rs/) build backend):
 
 ```bash
-maturin develop --release
+uv sync --all-extras --reinstall-package gaussogram
 ```
+
+This installs into the project's `.venv`. Run Python there with
+`uv run --no-sync python …` (or activate `.venv` first), not a separate
+system or conda interpreter, which would not see the built extension.
 
 ```python
 import numpy as np
@@ -195,7 +200,7 @@ data change, not new control flow.
   `nsgt`, and `ssqueezepy` (CWT / synchrosqueezing / STFT).
 - `reports/` — a short write-up of the Python investigations (dead-zone fixes
   and a comparison against `pywt` / `dtcwt` / `nsgt` / `ssqueezepy`) with figures;
-  regenerate via `python scripts/make_report.py`.
+  regenerate via `uv run --no-sync python scripts/make_report.py`.
 - `golden/` — golden vectors (generated from the reference) for parity tests.
 - `extern/fst-uofc` — the reference library (a local checkout / symlink).
 - `RUST_PORT_SPEC.md` — the porting specification.
@@ -208,15 +213,16 @@ reports. Setup, reusable handles, one-shot calls, and optional display costs are
 measured separately. See [benchmark instructions](benchmarks/README.md).
 
 ```bash
-python benchmarks/run.py --preset quick
-python benchmarks/report.py reports/benchmarks/latest/results.json
+uv run --no-sync python benchmarks/run.py --preset quick
+uv run --no-sync python benchmarks/report.py reports/benchmarks/latest/results.json
 ```
 
 ## Tests
 
 ```bash
-cargo test                                  # Rust core
-maturin develop --release && pytest python  # Python
+cargo test                                                # Rust core
+uv sync --all-extras --reinstall-package gaussogram       # rebuild the extension
+uv run --no-sync pytest python                            # Python
 ```
 
 ## License

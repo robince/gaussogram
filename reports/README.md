@@ -12,7 +12,7 @@ with impulse / tones / chirp examples on the dual scheme.
 Reproduce everything (figures + tables) with:
 
 ```bash
-python scripts/make_report.py     # needs the dev deps: pywt, ssqueezepy, scipy, nsgt, dtcwt
+uv run --no-sync python scripts/make_report.py     # needs the dev deps: pywt, ssqueezepy, scipy, nsgt, dtcwt
 ```
 
 All results use `N = 512` and are **illustrative** — ridge-tracking numbers in
