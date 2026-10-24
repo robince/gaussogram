@@ -53,7 +53,8 @@ fn dual_worked_example_n256() {
             (8, 16),
             (16, 32),
             (32, 64),
-            (64, 129),
+            (64, 128),
+            (128, 129), // the Nyquist bin is its own width-1 band
         ]
     );
     // Tiling B bands follow.
@@ -218,7 +219,8 @@ fn bpo_real_worked_example_n64() {
             (8, 12),
             (12, 16),
             (16, 24),
-            (24, 33), // top sub-band carries the Nyquist bin
+            (24, 32),
+            (32, 33), // the Nyquist bin is its own width-1 band
         ]
     );
 }
@@ -312,4 +314,24 @@ fn legacy_partition_parity() {
     assert_eq!(legacy_real_partitions(8), vec![1, 2, 4, 6, 8]);
     assert_eq!(legacy_real_partitions(16), vec![1, 2, 4, 8, 11, 14, 16]);
     assert_eq!(complex_partitions(8), vec![1, 2, 4, 6, 7, 8]);
+}
+
+#[test]
+fn real_scheme_band_widths_are_powers_of_two() {
+    // Every band FFT in the real schemes is a power of two: the Nyquist bin is
+    // its own width-1 band rather than an extra bin on the (widest) top band.
+    for &bpo in &[1usize, 2, 4, 8] {
+        for k in 3..=14 {
+            let n = 1usize << k;
+            let real = dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap();
+            let dual = dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap();
+            for s in [&real, &dual] {
+                for b in &s.bands {
+                    assert!(is_pow2(b.width()), "{} N={n} bpo={bpo}: {b:?}", s.name);
+                }
+                let nyq = s.bands.iter().find(|b| b.src_lo == n / 2).unwrap();
+                assert_eq!((nyq.width(), nyq.out_off), (1, n / 2), "N={n} bpo={bpo}");
+            }
+        }
+    }
 }

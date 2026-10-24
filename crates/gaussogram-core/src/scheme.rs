@@ -90,7 +90,9 @@ fn make_window(kind: WindowKind, screens: &mut GaussianScreens, lo: usize, width
     }
 }
 
-/// Tiling A: lossless dyadic cover of the positive half-spectrum `0..=N/2`.
+/// Tiling A: lossless dyadic cover of the positive half-spectrum `0..=N/2`
+/// (octaves `[0,1), [1,2), [2,4), …, [N/4, N/2)`, then the Nyquist bin
+/// `[N/2, N/2+1)` as its own width-1 band).
 /// Each dyadic octave is subdivided into `min(bands_per_octave, octave_width)`
 /// equal sub-bands (`bpo = 1` reproduces the single-band-per-octave cover).
 /// Returns the bands (out_off filled sequentially from 0).
@@ -129,14 +131,15 @@ fn tiling_a(
         prev = edge;
         edge *= 2;
     }
-    // Top octave [N/4, N/2]: subdivide [N/4, N/2) and let the last sub-band carry
-    // the Nyquist bin (hi = N/2 + 1).
-    let subs = split_pow2(prev, n / 2, bpo);
-    let last = subs.len() - 1;
-    for (i, (lo, hi)) in subs.into_iter().enumerate() {
-        let hi = if i == last { n / 2 + 1 } else { hi };
+    // Top octave [N/4, N/2), subdivided like the others.
+    for (lo, hi) in split_pow2(prev, n / 2, bpo) {
         push(lo, hi, &mut bands, &mut windows, &mut out_off, screens);
     }
+    // The Nyquist bin is its own width-1 band (untapered, like every width-1
+    // band). Folding it into the top band would make that band, the widest
+    // and most expensive one, an odd length (N/4 + 1, often prime) and its
+    // inverse FFT several times slower than a power of two.
+    push(n / 2, n / 2 + 1, &mut bands, &mut windows, &mut out_off, screens);
     (bands, windows)
 }
 
@@ -204,10 +207,12 @@ pub fn dyadic_dual_real_with(
     let mut screens = GaussianScreens::new(n);
     let (mut bands, mut windows) = tiling_a(n, kind, bands_per_octave, &mut screens);
 
-    // Apply optional Nyquist flat-top to tiling A's top band.
+    // Apply optional Nyquist flat-top to tiling A's top band: the band just
+    // below the width-1 Nyquist band that ends tiling A.
     if nyquist_flat_top {
-        let top = windows.last_mut().unwrap();
-        let top_band = bands.last().unwrap();
+        let top_idx = bands.len() - 2;
+        let top = &mut windows[top_idx];
+        let top_band = &bands[top_idx];
         let peak = top.fcentre - top_band.src_lo; // local index of the peak
         let peak_val = top.screen[peak];
         for v in top.screen[peak..].iter_mut() {

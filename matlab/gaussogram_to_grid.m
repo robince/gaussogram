@@ -151,8 +151,9 @@ else  % 'gauss': weight each band by its window profile, normalise overlaps
         else
             sigma = fc / (2.0 * pi);   % freq-domain sigma of the band Gaussian
             wj = exp(-((f - fc).^2) / (2.0 * sigma^2));
-            % Mirror the forward transform's Nyquist flat-top on the top band.
-            if nyquist && lo + w >= n / 2 + 1
+            % Mirror the forward transform's Nyquist flat-top on the top band
+            % (the one ending just below the width-1 Nyquist band).
+            if nyquist && lo + w >= n / 2
                 wj(f >= fc) = 1.0;
             end
         end
