@@ -55,3 +55,30 @@ fn handle_forward_and_inverse_match_core_across_calls() {
         unsafe { gaussogram_destroy(h) };
     }
 }
+
+#[test]
+fn partitions_report_status_for_invalid_n() {
+    let mut buf = [0i32; 64];
+    let real = |n: usize, cap: usize, buf: &mut [i32]| unsafe {
+        gaussogram_real_partitions(n, buf.as_mut_ptr(), cap)
+    };
+    let complex = |n: usize, cap: usize, buf: &mut [i32]| unsafe {
+        gaussogram_complex_partitions(n, buf.as_mut_ptr(), cap)
+    };
+
+    assert_eq!(real(8, 64, &mut buf), 5);
+    assert_eq!(&buf[..5], &[1, 2, 4, 6, 8]);
+    assert_eq!(complex(8, 64, &mut buf), 6);
+    assert_eq!(&buf[..6], &[1, 2, 4, 6, 7, 8]);
+
+    assert_eq!(real(12, 64, &mut buf), -STATUS_POWER_OF_TWO);
+    assert_eq!(complex(12, 64, &mut buf), -STATUS_POWER_OF_TWO);
+    assert_eq!(real(0, 64, &mut buf), -STATUS_POWER_OF_TWO);
+    assert_eq!(real(2, 64, &mut buf), -STATUS_TOO_SMALL);
+    assert_eq!(complex(4, 64, &mut buf), -STATUS_TOO_SMALL);
+    assert_eq!(real(16, 3, &mut buf), -STATUS_OUTPUT_LEN_MISMATCH);
+    assert_eq!(
+        unsafe { gaussogram_complex_partitions(8, ptr::null_mut(), 64) },
+        -STATUS_OUTPUT_LEN_MISMATCH
+    );
+}

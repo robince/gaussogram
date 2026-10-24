@@ -325,6 +325,11 @@ void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     const mxArray* c_in = prhs[1];
     require(mxIsDouble(c_in) && !mxIsSparse(c_in), "gaussogram:coeffsType",
             "coeffs must be a full double array.");
+    // mxGetN is the product of all trailing dimensions, so reject N-D arrays
+    // explicitly (a 1 x 3 x 11 array would otherwise pass as a row).
+    require(mxGetNumberOfDimensions(c_in) == 2 &&
+            (mxGetM(c_in) == 1 || mxGetN(c_in) == 1), "gaussogram:coeffsShape",
+            "coeffs must be a vector.");
     size_t clen = static_cast<size_t>(mxGetNumberOfElements(c_in));
     require(clen >= 2, "gaussogram:coeffsLen", "coeffs must have length N/2+1 >= 2.");
     int32_t window_id = scalar_int(prhs[2], "gaussogram:window", "window_id");
@@ -372,7 +377,10 @@ void op_partitions(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     } else {
         count = gaussogram_complex_partitions(n, buf.data(), buf.size());
     }
-    require(count >= 0, "gaussogram:partitions", "partitions failed (invalid N?).");
+    if (count < 0) {
+        mexErrMsgIdAndTxt("gaussogram:partitions", "partitions failed with status %d (%s).",
+                          -count, status_message(-count));
+    }
 
     plhs[0] = mxCreateNumericMatrix(count, 1, mxINT32_CLASS, mxREAL);
     int32_t* out = static_cast<int32_t*>(mxGetData(plhs[0]));
