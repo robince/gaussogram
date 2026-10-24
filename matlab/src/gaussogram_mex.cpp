@@ -13,9 +13,11 @@ extern "C" {
 #include "gaussogram.h"
 }
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -76,8 +78,8 @@ size_t scalar_size(const mxArray* arg, const char* id, const char* name) {
         mexErrMsgIdAndTxt(id, "%s must be a real numeric scalar.", name);
     }
     double v = mxGetScalar(arg);
-    if (v < 0.0) {
-        mexErrMsgIdAndTxt(id, "%s must be nonnegative.", name);
+    if (!(v >= 0.0) || v != std::floor(v)) {
+        mexErrMsgIdAndTxt(id, "%s must be a nonnegative integer.", name);
     }
     return static_cast<size_t>(v);
 }
@@ -161,13 +163,27 @@ mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in, Handle*
     return result;
 }
 
-// Read a persistent engine handle passed back from MATLAB as a uint64 scalar.
-GaussogramHandle* read_handle(const mxArray* arg) {
-    require(mxIsUint64(arg) && mxIsScalar(arg), "gaussogram:handle",
+// Engines created by op 'create' and not yet destroyed. Handles reach MATLAB as
+// plain uint64 values, which can outlive their engine (a copied value after
+// 'destroy') or come from elsewhere entirely, so every handle is checked
+// against this set before it is dereferenced or freed.
+std::unordered_set<GaussogramHandle*>& live_handles() {
+    static std::unordered_set<GaussogramHandle*> handles;
+    return handles;
+}
+
+GaussogramHandle* handle_from_arg(const mxArray* arg) {
+    require(mxIsUint64(arg) && mxIsScalar(arg) && !mxIsComplex(arg), "gaussogram:handle",
             "handle must be a uint64 scalar.");
     uint64_t v = *static_cast<const uint64_t*>(mxGetData(arg));
-    GaussogramHandle* h = reinterpret_cast<GaussogramHandle*>(static_cast<uintptr_t>(v));
-    require(h != nullptr, "gaussogram:handle", "handle is null (already destroyed?).");
+    return reinterpret_cast<GaussogramHandle*>(static_cast<uintptr_t>(v));
+}
+
+// Read a persistent engine handle passed back from MATLAB as a uint64 scalar.
+GaussogramHandle* read_handle(const mxArray* arg) {
+    GaussogramHandle* h = handle_from_arg(arg);
+    require(live_handles().count(h) == 1, "gaussogram:handle",
+            "handle is not a live gaussogram engine (destroyed, or loaded from a file?).");
     return h;
 }
 
@@ -203,6 +219,7 @@ void op_create(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
 
     GaussogramHandle* h = make_handle(scheme_id, n, window_id, nyquist);
+    live_handles().insert(h);
     mexLock();
 
     plhs[0] = mxCreateNumericMatrix(1, 1, mxUINT64_CLASS, mxREAL);
@@ -225,11 +242,9 @@ void op_forward_handle(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[
 // op = 'destroy': free a persistent engine and release one mexLock.
 void op_destroy(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 2, "gaussogram:nrhs", "destroy expects (op, handle).");
-    require(mxIsUint64(prhs[1]) && mxIsScalar(prhs[1]), "gaussogram:handle",
-            "handle must be a uint64 scalar.");
-    uint64_t v = *static_cast<const uint64_t*>(mxGetData(prhs[1]));
-    GaussogramHandle* h = reinterpret_cast<GaussogramHandle*>(static_cast<uintptr_t>(v));
-    if (h != nullptr) {
+    GaussogramHandle* h = handle_from_arg(prhs[1]);
+    // Unknown or already-destroyed handles are a no-op, never a double free.
+    if (live_handles().erase(h) == 1) {
         gaussogram_destroy(h);
         if (mexIsLocked()) {
             mexUnlock();

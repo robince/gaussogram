@@ -149,20 +149,14 @@ impl Gaussogram1d {
         }
     }
 
-    /// Forward transform for real-input schemes, reusing a caller-owned
-    /// [`Scratch`]. This is the allocation-free hot path: build the engine and
-    /// scratch once, then call this repeatedly.
+    /// Copy a real signal into `scratch`, ready for [`Gaussogram1d::forward_loaded`].
     ///
-    /// Note: `realfft` mutates its input buffer, so the real signal is copied
-    /// into `scratch.real_in` once per call. This single copy is unavoidable
-    /// with the immutable `&[f64]` contract (a c2r plan cannot borrow the
-    /// caller's slice read-only); it is *not* a per-call heap allocation.
-    pub fn forward_with(
-        &self,
-        signal: &[f64],
-        out: &mut [Complex<f64>],
-        scratch: &mut Scratch,
-    ) -> Result<(), GaussogramError> {
+    /// `realfft` uses its input buffer as workspace, so the signal must be
+    /// copied once per call to leave the caller's slice untouched. Splitting the
+    /// copy from the transform lets a binding read the caller's buffer while it
+    /// still holds its interpreter lock and run the transform without it, so
+    /// the caller's memory is never read concurrently with foreign mutation.
+    pub fn load_real(&self, signal: &[f64], scratch: &mut Scratch) -> Result<(), GaussogramError> {
         if self.scheme.complex_input {
             return Err(GaussogramError::WrongInputKind {
                 expected_complex: true,
@@ -174,6 +168,23 @@ impl Gaussogram1d {
                 got: signal.len(),
             });
         }
+        scratch.real_in.copy_from_slice(signal);
+        Ok(())
+    }
+
+    /// Forward transform of the real signal previously copied into `scratch` by
+    /// [`Gaussogram1d::load_real`]. Consumes the loaded signal (`realfft`
+    /// overwrites it), so call `load_real` again before the next transform.
+    pub fn forward_loaded(
+        &self,
+        out: &mut [Complex<f64>],
+        scratch: &mut Scratch,
+    ) -> Result<(), GaussogramError> {
+        if self.scheme.complex_input {
+            return Err(GaussogramError::WrongInputKind {
+                expected_complex: true,
+            });
+        }
         if out.len() != self.scheme.output_len {
             return Err(GaussogramError::OutputLenMismatch {
                 expected: self.scheme.output_len,
@@ -183,11 +194,24 @@ impl Gaussogram1d {
         let Forward::Real(plan) = &self.forward else {
             unreachable!("real scheme has a real forward plan");
         };
-        scratch.real_in.copy_from_slice(signal);
         let (input, _) = scratch.real_in.split_at_mut(self.scheme.n);
         plan.process(input, &mut scratch.spectrum, &mut scratch.fft);
         self.run_bands(out, scratch);
         Ok(())
+    }
+
+    /// Forward transform for real-input schemes, reusing a caller-owned
+    /// [`Scratch`]. This is the allocation-free hot path: build the engine and
+    /// scratch once, then call this repeatedly. Equivalent to
+    /// [`Gaussogram1d::load_real`] followed by [`Gaussogram1d::forward_loaded`].
+    pub fn forward_with(
+        &self,
+        signal: &[f64],
+        out: &mut [Complex<f64>],
+        scratch: &mut Scratch,
+    ) -> Result<(), GaussogramError> {
+        self.load_real(signal, scratch)?;
+        self.forward_loaded(out, scratch)
     }
 
     /// Forward transform for real-input schemes (`dyadic_real`, `dyadic_dual_real`).
@@ -237,12 +261,12 @@ impl Gaussogram1d {
         result
     }
 
-    /// Forward transform for the complex-input scheme (`dyadic_complex`),
-    /// reusing a caller-owned [`Scratch`].
-    pub fn forward_complex_with(
+    /// Copy a complex signal into `scratch`, ready for
+    /// [`Gaussogram1d::forward_complex_loaded`]. The complex FFT runs in place,
+    /// so this copy is required; see [`Gaussogram1d::load_real`].
+    pub fn load_complex(
         &self,
         signal: &[Complex<f64>],
-        out: &mut [Complex<f64>],
         scratch: &mut Scratch,
     ) -> Result<(), GaussogramError> {
         if !self.scheme.complex_input {
@@ -256,6 +280,22 @@ impl Gaussogram1d {
                 got: signal.len(),
             });
         }
+        scratch.spectrum.copy_from_slice(signal);
+        Ok(())
+    }
+
+    /// Forward transform of the complex signal previously copied into
+    /// `scratch` by [`Gaussogram1d::load_complex`] (consumes it).
+    pub fn forward_complex_loaded(
+        &self,
+        out: &mut [Complex<f64>],
+        scratch: &mut Scratch,
+    ) -> Result<(), GaussogramError> {
+        if !self.scheme.complex_input {
+            return Err(GaussogramError::WrongInputKind {
+                expected_complex: false,
+            });
+        }
         if out.len() != self.scheme.output_len {
             return Err(GaussogramError::OutputLenMismatch {
                 expected: self.scheme.output_len,
@@ -265,10 +305,21 @@ impl Gaussogram1d {
         let Forward::Complex(plan) = &self.forward else {
             unreachable!("complex scheme has a complex forward plan");
         };
-        scratch.spectrum.copy_from_slice(signal);
         plan.process(&mut scratch.spectrum, &mut scratch.fft);
         self.run_bands(out, scratch);
         Ok(())
+    }
+
+    /// Forward transform for the complex-input scheme (`dyadic_complex`),
+    /// reusing a caller-owned [`Scratch`].
+    pub fn forward_complex_with(
+        &self,
+        signal: &[Complex<f64>],
+        out: &mut [Complex<f64>],
+        scratch: &mut Scratch,
+    ) -> Result<(), GaussogramError> {
+        self.load_complex(signal, scratch)?;
+        self.forward_complex_loaded(out, scratch)
     }
 
     /// Forward transform for the complex-input scheme (`dyadic_complex`).
