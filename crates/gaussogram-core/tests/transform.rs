@@ -337,3 +337,36 @@ fn forward_with_reused_scratch_matches_forward() {
         assert_eq!(reused, fresh);
     }
 }
+
+#[test]
+fn engine_cache_shares_engines_and_normalises_ignored_options() {
+    use gaussogram_core::{cached_engine, SchemeKind, SchemeSpec, WindowKind};
+    use std::sync::Arc;
+    let spec = SchemeSpec {
+        kind: SchemeKind::DyadicReal,
+        n: 512,
+        window: WindowKind::Gaussian,
+        nyquist_flat_top: false,
+        bands_per_octave: 2,
+    };
+    let a = cached_engine(spec).unwrap();
+    let b = cached_engine(spec).unwrap();
+    assert!(Arc::ptr_eq(&a, &b));
+    // nyquist_flat_top is meaningless for dyadic_real: same engine.
+    let c = cached_engine(SchemeSpec {
+        nyquist_flat_top: true,
+        ..spec
+    })
+    .unwrap();
+    assert!(Arc::ptr_eq(&a, &c));
+    // A different bands_per_octave is a different engine with a different layout.
+    let d = cached_engine(SchemeSpec {
+        bands_per_octave: 1,
+        ..spec
+    })
+    .unwrap();
+    assert!(!Arc::ptr_eq(&a, &d));
+    assert_ne!(a.scheme().bands.len(), d.scheme().bands.len());
+    // Errors are not cached.
+    assert!(cached_engine(SchemeSpec { n: 500, ..spec }).is_err());
+}

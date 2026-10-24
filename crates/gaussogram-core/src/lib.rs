@@ -5,12 +5,16 @@
 //! [`Gaussogram1d`] engine walks it with no per-scheme branching. The FFT
 //! library sits behind the [`FftBackend`] trait (default: `rustfft`/`realfft`).
 
+pub mod cache;
 pub mod engine;
 pub mod error;
 pub mod fft;
 pub mod scheme;
 pub mod window;
 
+#[cfg(feature = "fft-rustfft")]
+pub use cache::{cached_engine, clear_engine_cache};
+pub use cache::{SchemeKind, SchemeSpec, ENGINE_CACHE_CAPACITY};
 pub use engine::{Gaussogram1d, Scratch};
 pub use error::{
     GaussogramError, STATUS_BANDS_PER_OCTAVE, STATUS_INPUT_LEN_MISMATCH, STATUS_INTERNAL,
