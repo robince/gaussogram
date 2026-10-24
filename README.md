@@ -131,7 +131,9 @@ C = h.forward_batch(np.random.randn(100, 512))   # (100, N/2+1)
   second gives a sparse neighbourhood
   graph (`time` / `band` / `dual` edges) for GNNs, graph-Laplacian smoothness, or
   structured-sparsity groups — letting a model use the packed ~N vector natively
-  without densifying it to a grid. `to_sparse_adjacency(adj, n, …)` converts that
+  without densifying it to a grid. Cross-band edges join coefficients whose
+  time tiles overlap. The graph does not wrap from the end of the record to
+  its start unless you pass `circular=True`. `to_sparse_adjacency(adj, n, …)` converts that
   graph to a sparse matrix for cluster-based statistics (MNE/FieldTrip
   permutation clustering, TFCE) or `scipy` connected components.
 

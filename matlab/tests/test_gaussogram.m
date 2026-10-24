@@ -15,6 +15,7 @@ passed = passed + run_case(@t_roundtrip_dyadic_real);
 passed = passed + run_case(@t_scheme_bands_layout);
 passed = passed + run_case(@t_to_grid_modes);
 passed = passed + run_case(@t_to_grid_output_shape);
+passed = passed + run_case(@t_to_grid_rejects_bad_coeffs);
 passed = passed + run_case(@t_rejects_complex_input);
 passed = passed + run_case(@t_rejects_non_power_of_two);
 passed = passed + run_case(@t_handle_matches_function);
@@ -235,6 +236,32 @@ catch err
     threw = strcmp(err.identifier, 'gaussogram:shape');
 end
 assert_true(threw, 'n_freq < 2 should be rejected');
+end
+
+function t_to_grid_rejects_bad_coeffs()
+n = 64;
+c = gaussogram(randn(n, 1));   % default dyadic_dual_real: N - 1 coeffs
+cases = { ...
+    {c, {'scheme', 'dyadic_real'}}, ...   % too many for dyadic_real
+    {c(1:end - 1), {}}, ...               % too short
+    {[c, c], {}}, ...                     % a matrix, not a vector
+    };
+for i = 1:numel(cases)
+    threw = false;
+    try
+        gaussogram_to_grid(cases{i}{1}, n, cases{i}{2}{:});
+    catch err
+        threw = strcmp(err.identifier, 'gaussogram:coeffsLen');
+    end
+    assert_true(threw, sprintf('mismatched coeffs case %d should be rejected', i));
+end
+threw = false;
+try
+    gaussogram_to_grid(complex(zeros(n, 1)), n, 'scheme', 'dyadic_complex');
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:scheme');
+end
+assert_true(threw, 'dyadic_complex should be rejected by to_grid');
 end
 
 function t_handle_survives_save_load()

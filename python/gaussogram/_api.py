@@ -281,7 +281,8 @@ def to_grid(
 ) -> NDArray[np.float64]:
     """Render packed GFT coefficients onto a ``(n_freq, n_time)`` magnitude
     grid for display: frequency on the vertical axis, time on the horizontal.
-    The default is the full ``(N/2+1, N)`` resolution.
+    The default is the full ``(N/2+1, N)`` resolution. Real schemes only: the
+    grid is the positive half-spectrum, so ``dyadic_complex`` is rejected.
 
     Each band carries ``width`` complex samples spanning the full signal
     duration. The band magnitude is first resampled to ``n_time`` time points
@@ -338,6 +339,13 @@ def to_grid(
         blurs per-axis. ``None`` (default) disables smoothing. This further
         softens whatever edges remain after ``interp``/``interp_freq``.
     """
+    if scheme == "dyadic_complex":
+        # The grid is the positive half-spectrum 0..N/2; the complex scheme's
+        # negative-frequency bands have no rows there.
+        raise ValueError(
+            "to_grid renders the positive half-spectrum of a real scheme; "
+            "'dyadic_complex' is not supported"
+        )
     coeffs = np.ascontiguousarray(coeffs, dtype=np.complex128)
     layout = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
     expected = int((layout.out_off + layout.width).max())
@@ -563,12 +571,30 @@ class CoeffAdjacency(NamedTuple):
     type_names: tuple = ("time", "band", "dual")
 
 
-def _connect_by_time(b1: dict, b2: dict):
-    """Map each coefficient of the finer-time band to the coarser-time band's
-    nearest sample, circularly (≈ time-aligned cross-band edges)."""
+def _connect_by_time(b1: dict, b2: dict, circular: bool):
+    """Time-aligned cross-band edges: link each coefficient of the finer-time
+    band to every coefficient of the coarser-time band whose time tile it
+    overlaps (one, or two when it straddles a coarse tile boundary).
+
+    Sample ``j`` of a width-``w`` band is the centre of the tile
+    ``[(j - 1/2)·n/w, (j + 1/2)·n/w)``. In units of ``n / (2·wf·wc)`` the fine
+    tile ``j`` spans ``((2j-1)·wc, (2j+1)·wc)`` and the coarse tile ``k`` spans
+    ``((2k-1)·wf, (2k+1)·wf)``, so the overlapping ``k`` follow in exact integer
+    arithmetic. A fine tile is never wider than a coarse one, so at most two
+    match. Past the last coarse tile, ``circular`` wraps to coarse tile 0 (the
+    transform is periodic); otherwise the end stays on the last coarse tile.
+    """
     fine, coarse = (b1, b2) if b1["w"] >= b2["w"] else (b2, b1)
-    jc = np.rint(fine["tcent"] / coarse["dt"]).astype(np.int64) % coarse["w"]
-    return coarse["gidx"][jc], fine["gidx"]
+    wf, wc = fine["w"], coarse["w"]
+    j = np.arange(wf, dtype=np.int64)
+    # Smallest k with (2k+1)·wf > (2j-1)·wc; largest k with (2k-1)·wf < (2j+1)·wc.
+    k_lo = ((2 * j - 1) * wc - wf) // (2 * wf) + 1
+    k_hi = -(-((2 * j + 1) * wc + wf) // (2 * wf)) - 1
+    two = k_hi > k_lo
+    jj = np.concatenate([j, j[two]])
+    kk = np.concatenate([k_lo, k_hi[two]])
+    kk = kk % wc if circular else np.clip(kk, 0, wc - 1)
+    return coarse["gidx"][kk], fine["gidx"][jj]
 
 
 def coefficient_adjacency(
@@ -577,6 +603,7 @@ def coefficient_adjacency(
     window_type: str = "gaussian",
     nyquist_flat_top: bool = False,
     bands_per_octave: int = 1,
+    circular: bool = False,
 ) -> CoeffAdjacency:
     """Neighbourhood graph over the packed coefficients (see
     :class:`CoeffAdjacency`). Three edge types:
@@ -586,6 +613,17 @@ def coefficient_adjacency(
       (the cross-octave / cross-band "scale" relation);
     - ``dual`` — tiling-A ↔ tiling-B coefficients with overlapping support
       (the redundancy of the ``dyadic_dual_real`` scheme; empty otherwise).
+
+    Cross-band (``band`` / ``dual``) edges join coefficients whose time tiles
+    overlap: in a 2:1 octave step every interior coarse coefficient links to
+    three fine ones, and a fine coefficient on a coarse tile boundary links to
+    both coarse neighbours.
+
+    The transform is circular, but by default the graph is not: no edge joins
+    the end of the record to its start, so clusters (e.g. permutation cluster
+    statistics) cannot wrap from ``t ≈ n`` to ``t = 0``. Pass
+    ``circular=True`` for the periodic graph, which adds the wrap-around edge
+    within every band of width >= 3 and wraps cross-band edges too.
     """
     lay = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
     b_freq, b_tiling = _band_freq_and_tiling(lay, n, scheme)
@@ -595,8 +633,6 @@ def coefficient_adjacency(
         bands.append(
             dict(bi=bi, lo=lo, hi=lo + w, w=w, fc=b_freq[bi], off=off,
                  gidx=off + np.arange(w),
-                 tcent=np.arange(w) * (n / w),
-                 dt=n / w,
                  tiling=b_tiling[bi])
         )
 
@@ -612,18 +648,20 @@ def coefficient_adjacency(
     for b in bands:
         if b["w"] >= 2:
             add(b["gidx"][:-1], b["gidx"][1:], 0)
+        if circular and b["w"] >= 3:
+            add(b["gidx"][-1], b["gidx"][0], 0)
     # band: frequency-adjacent bands within each tiling, time-aligned
     for tl in (0, 1):
         tb = sorted((b for b in bands if b["tiling"] == tl), key=lambda b: b["fc"])
         for a, c in zip(tb[:-1], tb[1:]):
-            add(*_connect_by_time(a, c), 1)
+            add(*_connect_by_time(a, c, circular), 1)
     # dual: tiling A <-> tiling B with overlapping frequency support
     a_bands = [b for b in bands if b["tiling"] == 0]
     b_bands = [b for b in bands if b["tiling"] == 1]
     for a in a_bands:
         for bb in b_bands:
             if a["lo"] < bb["hi"] and bb["lo"] < a["hi"]:
-                add(*_connect_by_time(a, bb), 2)
+                add(*_connect_by_time(a, bb, circular), 2)
 
     if not src:
         return CoeffAdjacency(np.zeros((2, 0), np.int64), np.zeros(0, np.int64), np.zeros(0))
@@ -635,9 +673,10 @@ def coefficient_adjacency(
     hi_i = np.maximum(s, d)
     keep = lo_i != hi_i  # drop any self-loops
     lo_i, hi_i, t = lo_i[keep], hi_i[keep], t[keep]
-    # de-duplicate identical (i, j, type) triples
-    key = np.stack([lo_i, hi_i, t], axis=1)
-    _, uniq = np.unique(key, axis=0, return_index=True)
+    # de-duplicate identical (i, j, type) triples via a packed 1-D key
+    total = int(hi_i.max()) + 1 if len(hi_i) else 1
+    key = (lo_i * total + hi_i) * 3 + t
+    _, uniq = np.unique(key, return_index=True)
     uniq = np.sort(uniq)
     edge_index = np.stack([lo_i[uniq], hi_i[uniq]]).astype(np.int64)
     return CoeffAdjacency(edge_index, t[uniq].astype(np.int64), np.ones(len(uniq)))

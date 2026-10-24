@@ -195,6 +195,16 @@ def test_to_grid_gauss_confines_join_tone_to_effective_bandwidth():
     assert (hi_g - lo_g) < 0.5 * (hi_b - lo_b)
 
 
+@pytest.mark.parametrize("interp_freq", ["block", "linear", "gauss"])
+def test_to_grid_rejects_dyadic_complex(interp_freq):
+    # The grid is the positive half-spectrum; negative-frequency bands of the
+    # complex scheme must not be folded onto it.
+    n = 64
+    z = np.exp(-2j * np.pi * 10 * np.arange(n) / n)
+    with pytest.raises(ValueError, match="dyadic_complex"):
+        g.to_grid(g.gft1d(z), n, scheme="dyadic_complex", interp_freq=interp_freq)
+
+
 def test_to_grid_rejects_unknown_interp_freq():
     n = 64
     with pytest.raises(ValueError, match="interp_freq"):
@@ -351,6 +361,72 @@ def test_coefficient_adjacency_is_valid_graph():
     assert int((et == 0).sum()) == expected_time
     # the dual scheme has A<->B (type 2) edges
     assert int((et == 2).sum()) > 0
+
+
+def _band_edges_between(adj, coarse, fine):
+    """(coarse local index, fine local index) pairs of the band edges joining
+    two bands given as (out_off, width)."""
+    (oc, wc), (of, wf) = coarse, fine
+    ei = adj.edge_index[:, adj.edge_type == 1]
+    pairs = set()
+    for i, j in ei.T:
+        for a, b in ((i, j), (j, i)):
+            if oc <= a < oc + wc and of <= b < of + wf:
+                pairs.add((int(a - oc), int(b - of)))
+    return pairs
+
+
+@pytest.mark.parametrize("circular", [False, True])
+def test_coefficient_adjacency_links_overlapping_time_tiles(circular):
+    # A 2:1 octave step: fine sample j sits at the centre of a tile that lies
+    # inside coarse tile j/2 (even j) or straddles coarse tiles (j-1)/2 and
+    # (j+1)/2 (odd j). So every interior coarse sample has exactly three fine
+    # children; only the end of the record depends on `circular`.
+    n = 64
+    lay = g.scheme_bands(n, scheme="dyadic_real")
+    adj = g.coefficient_adjacency(n, scheme="dyadic_real", circular=circular)
+    widths = [int(w) for w in lay.width]
+    ic = widths.index(8)
+    coarse = (int(lay.out_off[ic]), 8)
+    fine = (int(lay.out_off[ic + 1]), int(lay.width[ic + 1]))
+    assert fine[1] == 16
+    pairs = _band_edges_between(adj, coarse, fine)
+    expected = set()
+    for j in range(16):
+        ks = {j // 2} if j % 2 == 0 else {(j - 1) // 2, (j + 1) // 2}
+        for k in ks:
+            if k == 8:
+                if not circular:
+                    k = 7  # past the last coarse tile: stay on it
+                else:
+                    k = 0  # periodic: wrap to the first
+            expected.add((k, j))
+    assert pairs == expected
+    children = np.bincount([k for k, _ in pairs], minlength=8)
+    assert np.all(children[1:-1] == 3)
+    # The end of the record never links to t = 0 unless asked to.
+    assert ((0, 15) in pairs) == circular
+
+
+@pytest.mark.parametrize("scheme", ["dyadic_real", "dyadic_dual_real"])
+@pytest.mark.parametrize("bpo", [1, 2, 4])
+def test_coefficient_adjacency_circular_only_adds_wrap_edges(scheme, bpo):
+    n = 128
+    total = g.output_len(n, scheme, bands_per_octave=bpo)
+    lin = g.coefficient_adjacency(n, scheme, bands_per_octave=bpo)
+    circ = g.coefficient_adjacency(n, scheme, bands_per_octave=bpo, circular=True)
+    for adj in (lin, circ):
+        ei = adj.edge_index
+        assert ei.min() >= 0 and ei.max() < total and np.all(ei[0] < ei[1])
+        key = (ei[0] * total + ei[1]) * 3 + adj.edge_type
+        assert len(np.unique(key)) == len(key)  # no duplicate edges
+    # One wrap-around time edge per band of width >= 3, and none without it.
+    lay = g.scheme_bands(n, scheme, bands_per_octave=bpo)
+    n_wrap = sum(1 for w in lay.width if int(w) >= 3)
+    assert int((circ.edge_type == 0).sum()) == int((lin.edge_type == 0).sum()) + n_wrap
+    # Time edges of the linear graph only join consecutive coefficients.
+    t = lin.edge_index[:, lin.edge_type == 0]
+    assert np.all(t[1] - t[0] == 1)
 
 
 def test_coefficient_adjacency_single_tiling_has_no_dual_edges():

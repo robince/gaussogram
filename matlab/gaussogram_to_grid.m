@@ -10,7 +10,9 @@ function grid = gaussogram_to_grid(coeffs, n, varargin)
 %   frequency on rows (low to high), time on columns. Each band carries
 %   'width' complex samples spanning the full record; its magnitude is
 %   resampled to n_time time points along time ('interp'), then placed on the
-%   frequency axis ('interp_freq').
+%   frequency axis ('interp_freq'). Real schemes only: the grid is the
+%   positive half-spectrum, so 'dyadic_complex' is rejected. coeffs must be a
+%   vector of exactly the scheme's packed length.
 %
 %   Options (in addition to the shared scheme/window/nyquist_flat_top):
 %     'interp'      - 'linear' (default) piecewise-linear time resampling, or
@@ -70,10 +72,24 @@ if ~ismember(normalize, {'none', 'width', 'energy'})
     error('gaussogram:normalize', "normalize must be 'none', 'width', or 'energy'.");
 end
 
-coeffs = double(coeffs(:));
+if strcmpi(string(p.Results.scheme), "dyadic_complex")
+    % The grid is the positive half-spectrum 0..N/2; the complex scheme's
+    % negative-frequency bands have no rows there.
+    error('gaussogram:scheme', ...
+        "gaussogram_to_grid renders the positive half-spectrum of a real scheme; 'dyadic_complex' is not supported.");
+end
+
 bands = gaussogram_scheme_bands(n, ...
     'scheme', p.Results.scheme, 'window', p.Results.window, ...
     'nyquist_flat_top', p.Results.nyquist_flat_top);
+expected = max(bands.out_off + bands.width);
+if ~isvector(coeffs) || numel(coeffs) ~= expected
+    error('gaussogram:coeffsLen', ...
+        ['coeffs has %d elements but scheme ''%s'' with n=%d packs %d ' ...
+         'coefficients in a vector; check n and scheme match the forward transform.'], ...
+        numel(coeffs), char(p.Results.scheme), n, expected);
+end
+coeffs = double(coeffs(:));
 
 nfreq = n / 2 + 1;
 if ~isempty(p.Results.n_freq)
