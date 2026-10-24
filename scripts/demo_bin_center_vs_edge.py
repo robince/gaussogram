@@ -49,7 +49,9 @@ def band_energy(coeffs, layout):
 
 
 def make_grid(coeffs, scheme):
-    return g.to_grid(coeffs, N, scheme=scheme, nyquist_flat_top=True,
+    # nyquist_flat_top is a dual-scheme option; dyadic_real rejects it.
+    return g.to_grid(coeffs, N, scheme=scheme,
+                     nyquist_flat_top=(scheme == "dyadic_dual_real"),
                      interp="linear", normalize="width")
 
 
@@ -70,7 +72,7 @@ def make_grid(coeffs, scheme):
 panels = []  # (row, col, title, grid)
 for i, (label, f) in enumerate([("centre f=48", CENTRE_F), ("edge/join f=64", EDGE_F)]):
     c = g.gft1d_real(tone(f), scheme="dyadic_dual_real", nyquist_flat_top=True)
-    c_real = g.gft1d_real(tone(f), scheme="dyadic_real", nyquist_flat_top=True)
+    c_real = g.gft1d_real(tone(f), scheme="dyadic_real")
     panels.append((i, 0, f"{label} — dyadic_real (tiling A only)", make_grid(c_real, "dyadic_real")))
     panels.append((i, 1, f"{label} — dyadic_dual_real", make_grid(c, "dyadic_dual_real")))
 

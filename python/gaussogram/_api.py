@@ -318,16 +318,15 @@ def to_grid(
             mag = mag * np.sqrt(w)
         if w == 1:
             return np.full(n, mag[0])
-        # Each of the band's ``w`` samples represents a time *cell* of width n/w;
-        # anchor it at the cell CENTRE ``(j+0.5)·n/w`` (matching
-        # ``coefficient_geometry``), not at ``linspace(0, n-1, w)``. The endpoint
-        # convention pushed a narrow band's samples onto t=0 / t=n-1, biasing a
-        # centred impulse's energy toward the right edge in low-frequency bands.
-        band_times = (np.arange(w) + 0.5) * (n / w)
+        # The unshifted per-band inverse FFT puts sample j at time ``j·n/w``
+        # (matching ``coefficient_geometry``). The transform is circular, so
+        # resample periodically: the last sample wraps back to sample 0 at t=n.
+        band_times = np.arange(w) * (n / w)
         if interp == "nearest":
-            idx = np.abs(target_times[:, None] - band_times[None, :]).argmin(axis=1)
+            d = np.abs(target_times[:, None] - band_times[None, :])
+            idx = np.minimum(d, n - d).argmin(axis=1)
             return mag[idx]
-        return np.interp(target_times, band_times, mag)
+        return np.interp(target_times, band_times, mag, period=n)
 
     if interp_freq == "block":
         grid = np.zeros((nfreq, n), dtype=np.float64)
@@ -398,7 +397,7 @@ class CoeffGeometry(NamedTuple):
     output_len). Each coefficient owns a tile of size ``dt`` (time) x ``df``
     (frequency); ``dt * df == n`` for every tile."""
 
-    time: NDArray[np.float64]   #: tile centre time (samples), in [0, n)
+    time: NDArray[np.float64]   #: tile centre time (samples) = j·n/w, in [0, n)
     freq: NDArray[np.float64]   #: tile centre frequency (bins)
     dt: NDArray[np.float64]     #: time extent (samples) = n / width
     df: NDArray[np.float64]     #: frequency extent (bins) = width
@@ -453,7 +452,7 @@ def coefficient_geometry(
         w, fc, off = int(w), int(fc), int(off)
         j = np.arange(w)
         idx = off + j
-        time[idx] = (j + 0.5) * (n / w)
+        time[idx] = j * (n / w)
         freq[idx] = fc
         dt[idx] = n / w
         df[idx] = w
@@ -478,10 +477,10 @@ class CoeffAdjacency(NamedTuple):
 
 
 def _connect_by_time(b1: dict, b2: dict):
-    """Map each coefficient of the finer-time band to the time cell of the
-    coarser-time band it falls in (≈ time-aligned cross-band edges)."""
+    """Map each coefficient of the finer-time band to the coarser-time band's
+    nearest sample, circularly (≈ time-aligned cross-band edges)."""
     fine, coarse = (b1, b2) if b1["w"] >= b2["w"] else (b2, b1)
-    jc = np.clip((fine["tcent"] / coarse["dt"]).astype(np.int64), 0, coarse["w"] - 1)
+    jc = np.rint(fine["tcent"] / coarse["dt"]).astype(np.int64) % coarse["w"]
     return coarse["gidx"][jc], fine["gidx"]
 
 
@@ -511,7 +510,7 @@ def coefficient_adjacency(
         bands.append(
             dict(bi=bi, lo=lo, hi=lo + w, w=w, fc=fc, off=off,
                  gidx=off + np.arange(w),
-                 tcent=(np.arange(w) + 0.5) * (n / w),
+                 tcent=np.arange(w) * (n / w),
                  dt=n / w,
                  tiling=0 if off < a_len else 1)
         )

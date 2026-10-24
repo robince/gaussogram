@@ -156,18 +156,16 @@ if w == 1
     row = repmat(mag(1), 1, n);
     return;
 end
-% Each of the band's w samples represents a time *cell* of width n/w; anchor
-% it at the cell CENTRE (j+0.5)*n/w (matching the Python to_grid and
-% coefficient_geometry), not at linspace(0, n-1, w): the endpoint convention
-% pushed a narrow band's samples onto t=0 / t=n-1, biasing a centred
-% impulse's energy toward the right edge in low-frequency bands.
-band_times = ((0:(w - 1)) + 0.5) * (n / w);
+% The unshifted per-band inverse FFT puts sample j at time j*n/w (matching
+% the Python to_grid and coefficient_geometry). The transform is circular,
+% so resample periodically: the last sample wraps back to sample 0 at t=n.
+band_times = (0:(w - 1)) * (n / w);
 if strcmp(interp, 'nearest')
-    [~, idx] = min(abs(target_times.' - band_times), [], 2);
+    d = abs(target_times.' - band_times);
+    [~, idx] = min(min(d, n - d), [], 2);
     row = mag(idx).';
-else  % linear, clamped to the end cells (matches numpy.interp endpoints)
-    clamped = min(max(target_times, band_times(1)), band_times(end));
-    row = interp1(band_times, mag, clamped, 'linear');
+else  % linear, periodic (matches numpy.interp with period=n)
+    row = interp1([band_times, n], [mag(:).', mag(1)], target_times, 'linear');
 end
 end
 

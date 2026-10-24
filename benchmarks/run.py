@@ -213,7 +213,12 @@ def metadata(args):
         except importlib.metadata.PackageNotFoundError:
             versions[pkg] = None
     def command(argv):
-        return subprocess.run(argv, capture_output=True, text=True).stdout.strip()
+        # A stalled child (e.g. git status on a slow tree) must not block the run.
+        try:
+            return subprocess.run(argv, capture_output=True, text=True,
+                                  timeout=10).stdout.strip()
+        except (subprocess.TimeoutExpired, OSError):
+            return None
     return dict(created_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                 platform=platform.platform(), processor=platform.processor(),
                 cpu_model=command(['sysctl', '-n', 'machdep.cpu.brand_string']) if sys.platform == 'darwin' else platform.processor(),
