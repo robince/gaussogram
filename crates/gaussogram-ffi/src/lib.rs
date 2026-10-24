@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use num_complex::Complex;
 
 use gaussogram_core::{
-    cached_engine, complex_partitions, legacy_real_partitions, Gaussogram1d, SchemeKind,
-    SchemeSpec, Scratch, WindowKind, STATUS_INTERNAL, STATUS_OK, STATUS_UNKNOWN_SCHEME,
+    cached_engine, complex_partitions, legacy_real_partitions, Gaussogram1d, GaussogramError,
+    SchemeKind, SchemeSpec, Scratch, WindowKind, STATUS_INTERNAL, STATUS_OK, STATUS_UNKNOWN_SCHEME,
     STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
 };
 
@@ -195,8 +195,32 @@ pub unsafe extern "C" fn gaussogram_forward_real_batch(
     result.unwrap_or(STATUS_INTERNAL)
 }
 
+/// Copy partition boundaries into the caller's buffer. Returns the count
+/// written, or a negated status code: the core's validation error, or
+/// `-STATUS_OUTPUT_LEN_MISMATCH` for a null or too-small buffer.
+unsafe fn write_partitions(
+    pars: Result<Vec<usize>, GaussogramError>,
+    out: *mut i32,
+    out_cap: usize,
+) -> i32 {
+    let pars = match pars {
+        Ok(p) => p,
+        Err(e) => return -e.status_code(),
+    };
+    if out.is_null() || pars.len() > out_cap {
+        return -STATUS_OUTPUT_LEN_MISMATCH;
+    }
+    let dst = unsafe { slice::from_raw_parts_mut(out, pars.len()) };
+    for (d, &p) in dst.iter_mut().zip(pars.iter()) {
+        *d = p as i32;
+    }
+    pars.len() as i32
+}
+
 /// Write the legacy real-partition boundaries into `out` (caller provides a
-/// buffer of at least `2*log2(N/2)+1` ints). Returns the count written, or -1.
+/// buffer of at least `2*log2(N/2)+1` ints). Returns the count written, or a
+/// negated status code (`-STATUS_POWER_OF_TWO`, `-STATUS_TOO_SMALL` for
+/// `n < 4`, `-STATUS_OUTPUT_LEN_MISMATCH` for a null or too-small buffer).
 ///
 /// # Safety
 /// `out` must be valid for `out_cap` `i32`s.
@@ -206,21 +230,14 @@ pub unsafe extern "C" fn gaussogram_real_partitions(
     out: *mut i32,
     out_cap: usize,
 ) -> i32 {
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let pars = legacy_real_partitions(n);
-        if out.is_null() || pars.len() > out_cap {
-            return -1;
-        }
-        let dst = unsafe { slice::from_raw_parts_mut(out, pars.len()) };
-        for (d, &p) in dst.iter_mut().zip(pars.iter()) {
-            *d = p as i32;
-        }
-        pars.len() as i32
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| unsafe {
+        write_partitions(legacy_real_partitions(n), out, out_cap)
     }));
-    result.unwrap_or(-1)
+    result.unwrap_or(-STATUS_INTERNAL)
 }
 
-/// Write the complex-partition boundaries. See `gaussogram_real_partitions`.
+/// Write the complex-partition boundaries (`n` a power of two >= 8). See
+/// `gaussogram_real_partitions`.
 ///
 /// # Safety
 /// `out` must be valid for `out_cap` `i32`s.
@@ -230,18 +247,10 @@ pub unsafe extern "C" fn gaussogram_complex_partitions(
     out: *mut i32,
     out_cap: usize,
 ) -> i32 {
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let pars = complex_partitions(n);
-        if out.is_null() || pars.len() > out_cap {
-            return -1;
-        }
-        let dst = unsafe { slice::from_raw_parts_mut(out, pars.len()) };
-        for (d, &p) in dst.iter_mut().zip(pars.iter()) {
-            *d = p as i32;
-        }
-        pars.len() as i32
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| unsafe {
+        write_partitions(complex_partitions(n), out, out_cap)
     }));
-    result.unwrap_or(-1)
+    result.unwrap_or(-STATUS_INTERNAL)
 }
 
 /// Inverse transform for invertible real schemes (currently `dyadic_real`).

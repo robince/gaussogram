@@ -451,24 +451,18 @@ impl PyGaussogram {
 /// Complex-scheme partition boundaries (legacy `partitions`).
 #[pyfunction]
 fn partitions<'py>(py: Python<'py>, n: usize) -> PyResult<Bound<'py, PyArray1<i32>>> {
-    if n < 8 || (n & (n - 1)) != 0 {
-        return Err(PyValueError::new_err(
-            "size must be a power of two and at least 8",
-        ));
-    }
-    let pars: Vec<i32> = core_complex_partitions(n).iter().map(|&x| x as i32).collect();
+    let pars = core_complex_partitions(n)
+        .map_err(|_| PyValueError::new_err("size must be a power of two and at least 8"))?;
+    let pars: Vec<i32> = pars.iter().map(|&x| x as i32).collect();
     Ok(pars.into_pyarray(py))
 }
 
 /// Legacy real-scheme partition boundaries (legacy `real_partitions`).
 #[pyfunction]
 fn real_partitions<'py>(py: Python<'py>, n: usize) -> PyResult<Bound<'py, PyArray1<i32>>> {
-    if n < 4 || (n & (n - 1)) != 0 {
-        return Err(PyValueError::new_err(
-            "size must be a power of two and at least 4",
-        ));
-    }
-    let pars: Vec<i32> = legacy_real_partitions(n).iter().map(|&x| x as i32).collect();
+    let pars = legacy_real_partitions(n)
+        .map_err(|_| PyValueError::new_err("size must be a power of two and at least 4"))?;
+    let pars: Vec<i32> = pars.iter().map(|&x| x as i32).collect();
     Ok(pars.into_pyarray(py))
 }
 

@@ -25,6 +25,7 @@ passed = passed + run_case(@t_handle_survives_save_load);
 passed = passed + run_case(@t_stale_handle_rejected);
 passed = passed + run_case(@t_rejects_dyadic_complex_forward);
 passed = passed + run_case(@t_rejects_non_integer_n);
+passed = passed + run_case(@t_partitions_and_inverse_validate);
 
 fprintf('\nAll %d gaussogram test cases passed.\n', passed);
 end
@@ -262,6 +263,29 @@ catch err
     threw = strcmp(err.identifier, 'gaussogram:scheme');
 end
 assert_true(threw, 'dyadic_complex should be rejected by to_grid');
+end
+
+function t_partitions_and_inverse_validate()
+assert_true(isequal(gaussogram_partitions(8), int32([1; 2; 4; 6; 8])), ...
+    'real partitions of 8 should match the legacy layout');
+bad = {{12, 'real'}, {2, 'real'}, {12, 'complex'}, {4, 'complex'}};
+for i = 1:numel(bad)
+    threw = false;
+    try
+        gaussogram_partitions(bad{i}{:});
+    catch err
+        threw = strcmp(err.identifier, 'gaussogram:partitions');
+    end
+    assert_true(threw, sprintf('partitions(%d, %s) should be rejected', bad{i}{:}));
+end
+c = gaussogram(randn(64, 1), 'scheme', 'dyadic_real');
+threw = false;
+try
+    gaussogram_inverse_real([c, c]);
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:coeffsShape');
+end
+assert_true(threw, 'inverse_real should reject a matrix of coefficients');
 end
 
 function t_handle_survives_save_load()

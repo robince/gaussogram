@@ -99,7 +99,9 @@ int32_t gaussogram_scheme_bands(
 );
 
 /* Legacy partition boundaries. Writes into out (capacity out_cap int32s) and
- * returns the count written, or -1. */
+ * returns the count written, or a negated GAUSSOGRAM_STATUS_* code on error:
+ * -POWER_OF_TWO, -TOO_SMALL (n < 4 real, n < 8 complex), or
+ * -OUTPUT_LEN_MISMATCH for a null or too-small buffer. */
 int32_t gaussogram_real_partitions(size_t n, int32_t* out, size_t out_cap);
 int32_t gaussogram_complex_partitions(size_t n, int32_t* out, size_t out_cap);
 

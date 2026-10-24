@@ -311,9 +311,32 @@ fn rejects_too_small_dual() {
 
 #[test]
 fn legacy_partition_parity() {
-    assert_eq!(legacy_real_partitions(8), vec![1, 2, 4, 6, 8]);
-    assert_eq!(legacy_real_partitions(16), vec![1, 2, 4, 8, 11, 14, 16]);
-    assert_eq!(complex_partitions(8), vec![1, 2, 4, 6, 7, 8]);
+    assert_eq!(legacy_real_partitions(8).unwrap(), vec![1, 2, 4, 6, 8]);
+    assert_eq!(legacy_real_partitions(16).unwrap(), vec![1, 2, 4, 8, 11, 14, 16]);
+    assert_eq!(complex_partitions(8).unwrap(), vec![1, 2, 4, 6, 7, 8]);
+}
+
+#[test]
+fn legacy_partitions_reject_invalid_n() {
+    // These used to panic (n = 0, 1) or return corrupt boundaries (n = 2, 4
+    // complex; non-power-of-two n).
+    for n in [0usize, 6, 12, 24] {
+        assert_eq!(legacy_real_partitions(n), Err(GaussogramError::PowerOfTwo(n)));
+        assert_eq!(complex_partitions(n), Err(GaussogramError::PowerOfTwo(n)));
+    }
+    for n in [1usize, 2] {
+        assert!(matches!(
+            legacy_real_partitions(n),
+            Err(GaussogramError::TooSmall { min: 4, .. })
+        ));
+    }
+    for n in [1usize, 2, 4] {
+        assert!(matches!(
+            complex_partitions(n),
+            Err(GaussogramError::TooSmall { min: 8, .. })
+        ));
+    }
+    assert_eq!(legacy_real_partitions(4).unwrap(), vec![1, 2, 4]);
 }
 
 #[test]

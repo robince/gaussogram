@@ -280,7 +280,7 @@ pub fn dyadic_complex_with(n: usize, kind: WindowKind) -> Result<Scheme, Gaussog
             got: n,
         });
     }
-    let boundaries = complex_partitions(n);
+    let boundaries = complex_partitions(n)?;
     let global = complex_global_screen(n, kind);
 
     let mut bands = Vec::new();
@@ -329,7 +329,17 @@ pub fn dyadic_complex_with(n: usize, kind: WindowKind) -> Result<Scheme, Gaussog
 /// Legacy real-partition boundaries, faithful port of `gft_1dRealPartitions`.
 /// Kept for the `scheme="legacy"` parity path and `real_partitions()`.
 /// `real_partitions(8) == [1,2,4,6,8]`, `real_partitions(16) == [1,2,4,8,11,14,16]`.
-pub fn legacy_real_partitions(n: usize) -> Vec<usize> {
+/// Requires a power-of-two `n >= 4`; smaller or non-dyadic `n` would produce
+/// corrupt boundaries (or panic) in the faithful port.
+pub fn legacy_real_partitions(n: usize) -> Result<Vec<usize>, GaussogramError> {
+    check_pow2(n)?;
+    if n < 4 {
+        return Err(GaussogramError::TooSmall {
+            scheme: "real partitions",
+            min: 4,
+            got: n,
+        });
+    }
     let npar = (n / 2).ilog2() as usize; // round(log2(N/2)) for power-of-two N
     let size = 2 * npar + 1; // boundary count (excluding sentinel)
     let mut p = vec![0i64; size + 1];
@@ -357,12 +367,21 @@ pub fn legacy_real_partitions(n: usize) -> Vec<usize> {
         i -= 1;
     }
 
-    p[..size].iter().map(|&x| x as usize).collect()
+    Ok(p[..size].iter().map(|&x| x as usize).collect())
 }
 
 /// Complex-partition boundaries, faithful port of `gft_1dPartitions`.
-/// `complex_partitions(8) == [1,2,4,6,7,8]`.
-pub fn complex_partitions(n: usize) -> Vec<usize> {
+/// `complex_partitions(8) == [1,2,4,6,7,8]`. Requires a power-of-two `n >= 8`
+/// (the same minimum as `dyadic_complex`); smaller `n` gives corrupt boundaries.
+pub fn complex_partitions(n: usize) -> Result<Vec<usize>, GaussogramError> {
+    check_pow2(n)?;
+    if n < 8 {
+        return Err(GaussogramError::TooSmall {
+            scheme: "complex partitions",
+            min: 8,
+            got: n,
+        });
+    }
     let nn = n as i64;
     let logn = (n as f64).log2().round() as i64;
     let size = (logn * 2 + 1) as usize;
@@ -401,5 +420,5 @@ pub fn complex_partitions(n: usize) -> Vec<usize> {
     }
 
     // The C terminates with a -1 sentinel at p_off+1; boundaries are [0..=p_off].
-    partitions[..=p_off].iter().map(|&x| x as usize).collect()
+    Ok(partitions[..=p_off].iter().map(|&x| x as usize).collect())
 }
