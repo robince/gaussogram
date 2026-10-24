@@ -20,7 +20,6 @@
 //! [`WriteableGuard`]).
 
 use num_complex::Complex;
-use numpy::ndarray::Array2;
 use numpy::npyffi::{PyArrayObject, NPY_ARRAY_WRITEABLE};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2,
@@ -321,23 +320,15 @@ impl PyGaussogram {
         let engine = &self.engine;
         let scratch = &mut self.scratch;
         engine.load_real(signal, scratch).map_err(map_err)?;
-        match out {
-            Some(arr) => {
-                {
-                    let mut rw = arr.try_readwrite()?;
-                    let dst = rw.as_slice_mut()?;
-                    py.allow_threads(|| engine.forward_loaded(dst, scratch))
-                        .map_err(map_err)?;
-                }
-                Ok(arr)
-            }
-            None => {
-                let mut dst = vec![Complex::new(0.0, 0.0); self.output_len];
-                py.allow_threads(|| engine.forward_loaded(&mut dst, scratch))
-                    .map_err(map_err)?;
-                Ok(dst.into_pyarray(py))
-            }
+        // Without `out`, write into a fresh NumPy array through the same path.
+        let arr = out.unwrap_or_else(|| PyArray1::zeros(py, self.output_len, false));
+        {
+            let mut rw = arr.try_readwrite()?;
+            let dst = rw.as_slice_mut()?;
+            py.allow_threads(|| engine.forward_loaded(dst, scratch))
+                .map_err(map_err)?;
         }
+        Ok(arr)
     }
 
     /// Forward transform of a batch of real signals, one per row of a
@@ -380,7 +371,7 @@ impl PyGaussogram {
         let engine = &self.engine;
         let olen = self.output_len;
         let _guard = unsafe { WriteableGuard::lock(arr_ptr) };
-        match out {
+        let arr = match out {
             Some(arr) => {
                 if arr.shape() != [count, olen] || !arr.is_c_contiguous() {
                     return Err(PyValueError::new_err(format!(
@@ -388,23 +379,18 @@ impl PyGaussogram {
                         arr.shape()
                     )));
                 }
-                {
-                    let mut rw = arr.try_readwrite()?;
-                    let dst = rw.as_slice_mut()?;
-                    py.allow_threads(|| engine.forward_batch(&segs, dst))
-                        .map_err(map_err)?;
-                }
-                Ok(arr)
+                arr
             }
-            None => {
-                let mut dst = vec![Complex::new(0.0, 0.0); count * olen];
-                py.allow_threads(|| engine.forward_batch(&segs, &mut dst))
-                    .map_err(map_err)?;
-                let dst = Array2::from_shape_vec((count, olen), dst)
-                    .expect("count * output_len elements");
-                Ok(dst.into_pyarray(py))
-            }
+            // Without `out`, write into a fresh NumPy array through the same path.
+            None => PyArray2::zeros(py, [count, olen], false),
+        };
+        {
+            let mut rw = arr.try_readwrite()?;
+            let dst = rw.as_slice_mut()?;
+            py.allow_threads(|| engine.forward_batch(&segs, dst))
+                .map_err(map_err)?;
         }
+        Ok(arr)
     }
 
     /// Forward transform of a complex signal (for `dyadic_complex` handles).
