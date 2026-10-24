@@ -19,14 +19,18 @@ pub struct Scratch {
     real_in: Vec<f64>,
     /// FFT scratch, sized to the maximum plan scratch length.
     fft: Vec<Complex<f64>>,
+    /// Packed-coefficient copy for the frame inverse of an overlapping scheme,
+    /// whose bands cannot be transformed in place in `spectrum`. Empty otherwise.
+    coeffs: Vec<Complex<f64>>,
 }
 
 impl Scratch {
-    fn new(spectrum_len: usize, n: usize, max_scratch: usize) -> Self {
+    fn new(spectrum_len: usize, n: usize, max_scratch: usize, coeffs_len: usize) -> Self {
         Scratch {
             spectrum: vec![Complex::new(0.0, 0.0); spectrum_len],
             real_in: vec![0.0; n],
             fft: vec![Complex::new(0.0, 0.0); max_scratch.max(1)],
+            coeffs: vec![Complex::new(0.0, 0.0); coeffs_len],
         }
     }
 }
@@ -47,6 +51,9 @@ pub struct Gaussogram1d {
     forward_band: Vec<Arc<dyn ComplexPlan>>,
     /// Real inverse plan of length N (used by `inverse`).
     real_inverse: Option<Arc<dyn RealInversePlan>>,
+    /// Canonical dual screens, parallel to `scheme.bands` (used by `inverse`;
+    /// empty unless the scheme is an invertible overlapping frame).
+    dual_screen: Vec<Vec<f64>>,
     spectrum_len: usize,
     max_scratch: usize,
 }
@@ -89,10 +96,12 @@ impl Gaussogram1d {
             }
         }
 
-        // The inverse works in place on the spectrum buffer, which relies on
-        // invertible schemes packing a disjoint half-spectrum cover in order.
+        // The disjoint inverse works in place on the spectrum buffer, which
+        // relies on the scheme packing a disjoint half-spectrum cover in order.
+        // Overlapping schemes use the frame inverse instead.
         assert!(
             !scheme.invertible
+                || scheme.overlapping_src
                 || (scheme.output_len == spectrum_len
                     && scheme.bands.iter().all(|b| b.out_off == b.src_lo)),
             "invertible scheme '{}' must pack its bands at out_off == src_lo",
@@ -107,12 +116,19 @@ impl Gaussogram1d {
             None
         };
 
+        let dual_screen = if scheme.invertible && scheme.overlapping_src {
+            dual_screens(&scheme, spectrum_len)
+        } else {
+            Vec::new()
+        };
+
         Gaussogram1d {
             scheme,
             forward,
             inverse_band,
             forward_band,
             real_inverse,
+            dual_screen,
             spectrum_len,
             max_scratch,
         }
@@ -131,7 +147,17 @@ impl Gaussogram1d {
     /// allocate this once and pass it to the `*_with` methods to avoid
     /// re-allocating `spectrum`, `real_in`, and `fft` on every call.
     pub fn alloc_scratch(&self) -> Scratch {
-        Scratch::new(self.spectrum_len, self.scheme.n, self.max_scratch)
+        let coeffs_len = if self.dual_screen.is_empty() {
+            0
+        } else {
+            self.scheme.output_len
+        };
+        Scratch::new(
+            self.spectrum_len,
+            self.scheme.n,
+            self.max_scratch,
+            coeffs_len,
+        )
     }
 
     /// Walk the bands: window the source slice (with the 1/width inverse-FFT
@@ -348,10 +374,11 @@ impl Gaussogram1d {
     /// this lets a binding read the caller's buffer only while it holds its
     /// interpreter lock.
     ///
-    /// An invertible scheme is a disjoint cover of the half-spectrum packed in
-    /// order (every band's `out_off == src_lo`, `output_len == N/2 + 1`), so the
+    /// A disjoint invertible scheme covers the half-spectrum packed in order
+    /// (every band's `out_off == src_lo`, `output_len == N/2 + 1`), so the
     /// coefficients are copied straight into the spectrum buffer and each band
-    /// is transformed in place there: no copy beyond this one.
+    /// is transformed in place there: no copy beyond this one. An overlapping
+    /// scheme's coefficients go to a separate buffer for the frame inverse.
     pub fn load_coeffs(
         &self,
         coeffs: &[Complex<f64>],
@@ -366,12 +393,21 @@ impl Gaussogram1d {
                 got: coeffs.len(),
             });
         }
-        scratch.spectrum.copy_from_slice(coeffs);
+        if self.scheme.overlapping_src {
+            scratch.coeffs.copy_from_slice(coeffs);
+        } else {
+            scratch.spectrum.copy_from_slice(coeffs);
+        }
         Ok(())
     }
 
     /// Inverse transform of the coefficients previously copied into `scratch`
     /// by [`Gaussogram1d::load_coeffs`] (consumes them).
+    ///
+    /// For an overlapping scheme (`dyadic_dual_real`) this is the frame
+    /// (least-squares) inverse: exact for unmodified coefficients, and for
+    /// modified ones (thresholded, masked, denoised) the signal whose
+    /// coefficients are closest to them in the L2 sense.
     pub fn inverse_loaded(&self, out: &mut [f64], scratch: &mut Scratch) -> Result<(), GaussogramError> {
         if !self.scheme.invertible {
             return Err(GaussogramError::NotInvertible(self.scheme.name));
@@ -383,19 +419,45 @@ impl Gaussogram1d {
             });
         }
 
-        // Rebuild the half-spectrum band by band, in place: FFT(coeffs_band)
-        // recovers S_slice * screen; divide by screen to recover S_slice.
-        for ((band, window), plan) in self
-            .scheme
-            .bands
-            .iter()
-            .zip(self.scheme.windows.iter())
-            .zip(self.forward_band.iter())
-        {
-            let buf = &mut scratch.spectrum[band.src_lo..band.src_hi];
-            plan.process(buf, &mut scratch.fft);
-            for (v, &sc) in buf.iter_mut().zip(window.screen.iter()) {
-                *v /= sc;
+        if self.scheme.overlapping_src {
+            // Frame inverse: FFT(coeffs_band) recovers S_slice * screen for
+            // every band; accumulate each weighted by its dual screen.
+            let Scratch {
+                spectrum,
+                coeffs,
+                fft,
+                ..
+            } = scratch;
+            spectrum.fill(Complex::new(0.0, 0.0));
+            for ((band, dual), plan) in self
+                .scheme
+                .bands
+                .iter()
+                .zip(self.dual_screen.iter())
+                .zip(self.forward_band.iter())
+            {
+                let buf = &mut coeffs[band.out_off..band.out_off + band.width()];
+                plan.process(buf, fft);
+                let dst = &mut spectrum[band.src_lo..band.src_hi];
+                for ((s, &v), &d) in dst.iter_mut().zip(buf.iter()).zip(dual.iter()) {
+                    *s += v * d;
+                }
+            }
+        } else {
+            // Rebuild the half-spectrum band by band, in place: FFT(coeffs_band)
+            // recovers S_slice * screen; divide by screen to recover S_slice.
+            for ((band, window), plan) in self
+                .scheme
+                .bands
+                .iter()
+                .zip(self.scheme.windows.iter())
+                .zip(self.forward_band.iter())
+            {
+                let buf = &mut scratch.spectrum[band.src_lo..band.src_hi];
+                plan.process(buf, &mut scratch.fft);
+                for (v, &sc) in buf.iter_mut().zip(window.screen.iter()) {
+                    *v /= sc;
+                }
             }
         }
 
@@ -405,7 +467,9 @@ impl Gaussogram1d {
             .expect("invertible scheme has a real inverse plan");
         let n = self.scheme.n;
         // The half-spectrum's DC and Nyquist bins are real for a real signal;
-        // clear any imaginary float noise so the c2r inverse accepts them.
+        // clear any imaginary part (float noise, or for modified coefficients
+        // the least-squares projection onto a real bin) so the c2r inverse
+        // accepts them.
         scratch.spectrum[0].im = 0.0;
         scratch.spectrum[n / 2].im = 0.0;
         plan.process(&mut scratch.spectrum, out, &mut scratch.fft);
@@ -416,7 +480,7 @@ impl Gaussogram1d {
         Ok(())
     }
 
-    /// Inverse transform (only for invertible schemes, currently `dyadic_real`),
+    /// Inverse transform (real schemes: `dyadic_real`, `dyadic_dual_real`),
     /// reusing a caller-owned [`Scratch`]. Equivalent to
     /// [`Gaussogram1d::load_coeffs`] followed by [`Gaussogram1d::inverse_loaded`].
     pub fn inverse_with(
@@ -429,7 +493,7 @@ impl Gaussogram1d {
         self.inverse_loaded(out, scratch)
     }
 
-    /// Inverse transform (only for invertible schemes, currently `dyadic_real`).
+    /// Inverse transform (real schemes: `dyadic_real`, `dyadic_dual_real`).
     /// Convenience wrapper that allocates scratch per call.
     pub fn inverse(
         &self,
@@ -439,4 +503,39 @@ impl Gaussogram1d {
         let mut scratch = self.alloc_scratch();
         self.inverse_with(coeffs, out, &mut scratch)
     }
+}
+
+/// Canonical dual screens of an overlapping (frame) scheme, one per band.
+///
+/// Band `b` maps its bin slice through `c_b = IFFT_w(W_b * X_slice)`, a
+/// `1/sqrt(w)`-scaled unitary map, so the frame operator is diagonal in
+/// frequency: `D[k] = sum_{b covers k} W_b[k]^2 / w_b`. The least-squares
+/// inverse is then `X[k] = sum_b FFT(c_b)[k] * W_b[k] / (w_b * D[k])`; this
+/// returns the dual screen `W_b / (w_b * D)` of each band. For a disjoint cover
+/// it reduces to `1 / W_b`, the plain per-band inverse.
+fn dual_screens(scheme: &Scheme, spectrum_len: usize) -> Vec<Vec<f64>> {
+    let mut diag = vec![0.0f64; spectrum_len];
+    for (band, window) in scheme.bands.iter().zip(scheme.windows.iter()) {
+        let inv = 1.0 / band.width() as f64;
+        for (d, &sc) in diag[band.src_lo..band.src_hi]
+            .iter_mut()
+            .zip(window.screen.iter())
+        {
+            *d += sc * sc * inv;
+        }
+    }
+    scheme
+        .bands
+        .iter()
+        .zip(scheme.windows.iter())
+        .map(|(band, window)| {
+            let inv = 1.0 / band.width() as f64;
+            window
+                .screen
+                .iter()
+                .zip(diag[band.src_lo..band.src_hi].iter())
+                .map(|(&sc, &d)| sc * inv / d)
+                .collect()
+        })
+        .collect()
 }

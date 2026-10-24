@@ -407,7 +407,8 @@ impl Gaussogram1d {
     // COMPLEX-input scheme (dyadic_complex). Errors unless scheme.complex_input.
     pub fn forward_complex(&self, signal: &[Complex<f64>], out: &mut [Complex<f64>]) -> Result<(), GaussogramError>;
 
-    // Inverse only where scheme.invertible (currently dyadic_real). Else NotInvertible.
+    // Inverse only where scheme.invertible (dyadic_real; dyadic_dual_real via the
+    // frame inverse). Else NotInvertible.
     pub fn inverse(&self, coeffs: &[Complex<f64>], out: &mut [f64]) -> Result<(), GaussogramError>;
 }
 
@@ -589,10 +590,11 @@ Use `proptest` for invariants and standard `#[test]` for parity/numerics.
 
 **Round-trip:**
 - `dyadic_real.inverse(forward(x)) ≈ x` to ~1e-12 (lossless scheme is invertible).
-- `dyadic_dual_real` is an overcomplete frame (overlapping tilings), invertible only via
-  coverage normalisation where `coverage[k] = Σ_b |w_b[k]|² > 0`; the plain `inverse` should
-  return `NotInvertible` unless that path is implemented (not required — inverse is not a
-  priority for this scheme).
+- `dyadic_dual_real` is an overcomplete frame (overlapping tilings), inverted by the
+  least-squares (canonical dual) frame inverse. Each band is a `1/√w`-scaled unitary map of
+  its bins, so the frame operator is diagonal: `D[k] = Σ_b w_b[k]² / width_b > 0`, and
+  `X[k] = Σ_b FFT(c_b)[k] · w_b[k] / (width_b · D[k])`. Exact for `forward(x)` (~1e-12); for
+  edited coefficients it returns the least-squares signal (residual orthogonal to the range).
 
 **Functional win (the point of the new scheme):**
 - **Band-edge tone test:** synthesise pure tones at A's octave boundaries (the dead zones,

@@ -66,6 +66,54 @@ def test_dyadic_real_round_trip(n):
     np.testing.assert_allclose(recon, x, atol=1e-9)
 
 
+# ---- frame inverse (dyadic_dual_real) -------------------------------------
+
+
+@pytest.mark.parametrize("nyquist_flat_top", [False, True])
+@pytest.mark.parametrize("bpo", [1, 2, 4])
+@pytest.mark.parametrize("n", [16, 64, 256])
+def test_dyadic_dual_real_round_trip(n, bpo, nyquist_flat_top):
+    x = np.random.default_rng(0).standard_normal(n)
+    kw = dict(bands_per_octave=bpo, nyquist_flat_top=nyquist_flat_top)
+    coeffs = g.gft1d_real(x, scheme="dyadic_dual_real", **kw)
+    assert len(coeffs) == n - 1
+    # The default scheme=None infers dyadic_dual_real from the N-1 length.
+    np.testing.assert_allclose(g.inverse_real(coeffs, **kw), x, atol=1e-9)
+    np.testing.assert_allclose(
+        g.inverse_real(coeffs, scheme="dyadic_dual_real", **kw), x, atol=1e-9
+    )
+
+
+def test_inverse_real_default_round_trips_default_forward():
+    x = np.random.default_rng(3).standard_normal(128)
+    np.testing.assert_allclose(g.inverse_real(g.gft1d_real(x)), x, atol=1e-9)
+
+
+def test_dual_frame_inverse_beats_tiling_a_on_thresholded_coeffs():
+    # A tone on an octave join sits in tiling A's taper dead zone; after
+    # thresholding, the least-squares inverse (using both tilings) recovers the
+    # signal far better than inverting tiling A's coefficients alone.
+    n = 1024
+    t = np.arange(n)
+    x = np.sin(2 * np.pi * 64 * t / n) + np.sin(2 * np.pi * 96 * t / n)
+    c = g.gft1d_real(x)
+    c = np.where(np.abs(c) >= np.quantile(np.abs(c), 0.9), c, 0)
+
+    def snr(est):
+        return 10 * np.log10(np.sum(x**2) / np.sum((x - est) ** 2))
+
+    frame = snr(g.inverse_real(c))
+    a_only = snr(g.inverse_real(c[: n // 2 + 1], scheme="dyadic_real"))
+    assert frame > a_only + 10, (frame, a_only)
+
+
+def test_inverse_real_rejects_ambiguous_length_and_complex_scheme():
+    with pytest.raises(ValueError, match="matches neither"):
+        g.inverse_real(np.zeros(10, complex))
+    with pytest.raises(ValueError, match="not invertible"):
+        g.inverse_real(np.zeros(15, complex), scheme="dyadic_complex")
+
+
 # ---- functional win: band-edge tone rescued by tiling B -------------------
 
 
@@ -318,6 +366,17 @@ def test_handle_round_trip_dyadic_real():
     coeffs = h.forward(x)
     recon = h.inverse(coeffs)
     np.testing.assert_allclose(recon, x, atol=1e-9)
+
+
+def test_handle_round_trip_dyadic_dual_real():
+    n = 256
+    x = np.ascontiguousarray(np.random.default_rng(1).standard_normal(n))
+    h = g.Gaussogram1d(n, scheme="dyadic_dual_real", bands_per_octave=2)
+    assert h.invertible
+    coeffs = h.forward(x)
+    # Repeated inverses must reuse the handle's scratch without leaking state.
+    np.testing.assert_allclose(h.inverse(coeffs), x, atol=1e-9)
+    np.testing.assert_allclose(h.inverse(coeffs), x, atol=1e-9)
 
 
 def test_handle_rejects_wrong_length():
@@ -597,15 +656,14 @@ def test_concurrent_calls_on_shared_input_keep_it_writeable(scheme):
     x0 = x.copy()
     expected = g.Gaussogram1d(n, scheme=scheme).forward(x)
     engines = [g.Gaussogram1d(n, scheme=scheme) for _ in range(4)]
-    coeffs = expected[: n // 2 + 1] if scheme == "dyadic_real" else None
+    coeffs = expected
     results, errors = [], []
 
     def work(e):
         try:
             for _ in range(20):
                 results.append(e.forward(x))
-                if coeffs is not None:
-                    e.inverse(coeffs)
+                e.inverse(coeffs)
         except BaseException as exc:  # surface worker failures in the test
             errors.append(exc)
 
@@ -619,8 +677,7 @@ def test_concurrent_calls_on_shared_input_keep_it_writeable(scheme):
         raise errors[0]
     assert len(results) == 4 * 20
     assert x.flags.writeable
-    if coeffs is not None:
-        assert coeffs.flags.writeable
+    assert coeffs.flags.writeable
     np.testing.assert_array_equal(x, x0)
     for r in results:
         np.testing.assert_array_equal(r, expected)

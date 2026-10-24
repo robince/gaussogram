@@ -209,27 +209,48 @@ fn gft1d<'py>(
     Ok(out.into_pyarray(py))
 }
 
-/// Inverse of the invertible `dyadic_real` scheme. `coeffs` has length N/2+1.
-/// `bands_per_octave` must match the value used for the forward transform.
+/// Inverse of a real scheme: exact for `dyadic_real` (`coeffs` of length
+/// N/2+1), least-squares frame inverse for `dyadic_dual_real` (length N-1).
+/// `scheme=None` infers the scheme from the length (the two families of
+/// lengths, 2^k+1 and 2^k-1, never coincide for valid N). `bands_per_octave`
+/// and `nyquist_flat_top` must match the values used for the forward transform.
 #[pyfunction]
-#[pyo3(signature = (coeffs, window_type="gaussian", bands_per_octave=1))]
+#[pyo3(signature = (coeffs, window_type="gaussian", bands_per_octave=1, scheme=None, nyquist_flat_top=false))]
 fn inverse_real<'py>(
     py: Python<'py>,
     coeffs: PyReadonlyArray1<'py, Complex<f64>>,
     window_type: &str,
     bands_per_octave: usize,
+    scheme: Option<&str>,
+    nyquist_flat_top: bool,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let kind = window_kind(window_type)?;
     let c = coeffs.as_slice()?;
-    if c.len() < 3 {
-        return Err(PyValueError::new_err(format!(
-            "coeffs must have length N/2 + 1 >= 3 (got {})",
-            c.len()
-        )));
-    }
-    // Recover N from output_len = N/2 + 1 (invariant to bands_per_octave).
-    let n = (c.len() - 1) * 2;
-    let engine = build_engine("dyadic_real", n, kind, false, bands_per_octave)?;
+    let len = c.len();
+    let scheme = match scheme {
+        Some(s) => s,
+        None if len >= 3 && (len - 1).is_power_of_two() => "dyadic_real",
+        None if len >= 7 && (len + 1).is_power_of_two() => "dyadic_dual_real",
+        None => {
+            return Err(PyValueError::new_err(format!(
+                "coeffs length {len} matches neither dyadic_real (N/2+1) nor \
+                 dyadic_dual_real (N-1) for a power-of-two N"
+            )))
+        }
+    };
+    // Recover N from the output length (invariant to bands_per_octave).
+    let n = match scheme {
+        "dyadic_real" if len >= 3 => (len - 1) * 2,
+        "dyadic_real" => {
+            return Err(PyValueError::new_err(format!(
+                "coeffs must have length N/2 + 1 >= 3 (got {len})"
+            )))
+        }
+        "dyadic_dual_real" => len + 1,
+        "dyadic_complex" => return Err(map_err(GaussogramError::NotInvertible("dyadic_complex"))),
+        _ => 0, // build_engine reports the unknown scheme
+    };
+    let engine = build_engine(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![0.0f64; n];
     engine.load_coeffs(c, &mut scratch).map_err(map_err)?;
@@ -428,7 +449,8 @@ impl PyGaussogram {
         Ok(out.into_pyarray(py))
     }
 
-    /// Inverse transform (only for invertible schemes, e.g. `dyadic_real`).
+    /// Inverse transform for real schemes (exact for `dyadic_real`, least-squares
+    /// frame inverse for `dyadic_dual_real`).
     fn inverse<'py>(
         &mut self,
         py: Python<'py>,

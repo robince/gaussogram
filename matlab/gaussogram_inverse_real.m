@@ -1,12 +1,13 @@
 function signal = gaussogram_inverse_real(coeffs, varargin)
-%GAUSSOGRAM_INVERSE_REAL  Inverse of the invertible 'dyadic_real' scheme.
+%GAUSSOGRAM_INVERSE_REAL  Inverse of the 'dyadic_real' scheme.
 %   signal = GAUSSOGRAM_INVERSE_REAL(coeffs)
 %   signal = GAUSSOGRAM_INVERSE_REAL(coeffs, 'window', w)
 %
 %   coeffs is the length-(N/2+1) complex coefficient vector produced by
 %   GAUSSOGRAM(..., 'scheme', 'dyadic_real'). Returns the reconstructed real
 %   signal as a length-N column vector. The scheme is implicitly 'dyadic_real'
-%   (the only invertible real scheme); only the 'window' option is honoured.
+%   and only the 'window' option is honoured. (The core also inverts
+%   'dyadic_dual_real'; that path is not wired into MATLAB yet.)
 %
 %   See also GAUSSOGRAM.
 
