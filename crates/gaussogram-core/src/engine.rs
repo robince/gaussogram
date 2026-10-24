@@ -17,18 +17,15 @@ pub struct Scratch {
     spectrum: Vec<Complex<f64>>,
     /// Real-input copy buffer (real schemes only).
     real_in: Vec<f64>,
-    /// Per-band working buffer for the forward, sized to the maximum band width.
-    band: Vec<Complex<f64>>,
     /// FFT scratch, sized to the maximum plan scratch length.
     fft: Vec<Complex<f64>>,
 }
 
 impl Scratch {
-    fn new(spectrum_len: usize, n: usize, max_width: usize, max_scratch: usize) -> Self {
+    fn new(spectrum_len: usize, n: usize, max_scratch: usize) -> Self {
         Scratch {
             spectrum: vec![Complex::new(0.0, 0.0); spectrum_len],
             real_in: vec![0.0; n],
-            band: vec![Complex::new(0.0, 0.0); max_width.max(1)],
             fft: vec![Complex::new(0.0, 0.0); max_scratch.max(1)],
         }
     }
@@ -42,14 +39,15 @@ enum Forward {
 pub struct Gaussogram1d {
     scheme: Scheme,
     forward: Forward,
-    /// Inverse band plans keyed by band width (used by `forward`).
-    inverse_band: HashMap<usize, Arc<dyn ComplexPlan>>,
-    /// Forward band plans keyed by band width (used by `inverse`).
-    forward_band: HashMap<usize, Arc<dyn ComplexPlan>>,
+    /// Inverse FFT plan for each band, parallel to `scheme.bands` (used by
+    /// `forward`). Bands of equal width share one plan.
+    inverse_band: Vec<Arc<dyn ComplexPlan>>,
+    /// Forward FFT plan for each band (used by `inverse`; empty unless the
+    /// scheme is invertible).
+    forward_band: Vec<Arc<dyn ComplexPlan>>,
     /// Real inverse plan of length N (used by `inverse`).
     real_inverse: Option<Arc<dyn RealInversePlan>>,
     spectrum_len: usize,
-    max_width: usize,
     max_scratch: usize,
 }
 
@@ -64,9 +62,10 @@ impl Gaussogram1d {
             Forward::Real(backend.real_forward(n))
         };
 
-        let mut inverse_band: HashMap<usize, Arc<dyn ComplexPlan>> = HashMap::new();
-        let mut forward_band: HashMap<usize, Arc<dyn ComplexPlan>> = HashMap::new();
-        let mut max_width = 1usize;
+        let mut inverse_by_width: HashMap<usize, Arc<dyn ComplexPlan>> = HashMap::new();
+        let mut forward_by_width: HashMap<usize, Arc<dyn ComplexPlan>> = HashMap::new();
+        let mut inverse_band = Vec::with_capacity(scheme.bands.len());
+        let mut forward_band = Vec::new();
         let mut max_scratch = match &forward {
             Forward::Real(p) => p.scratch_len(),
             Forward::Complex(p) => p.scratch_len(),
@@ -74,18 +73,19 @@ impl Gaussogram1d {
 
         for band in &scheme.bands {
             let w = band.width();
-            max_width = max_width.max(w);
-            inverse_band.entry(w).or_insert_with(|| {
+            let inv = inverse_by_width.entry(w).or_insert_with(|| {
                 let p = backend.complex_inverse(w);
                 max_scratch = max_scratch.max(p.scratch_len());
                 p
             });
+            inverse_band.push(inv.clone());
             if scheme.invertible {
-                forward_band.entry(w).or_insert_with(|| {
+                let fwd = forward_by_width.entry(w).or_insert_with(|| {
                     let p = backend.complex_forward(w);
                     max_scratch = max_scratch.max(p.scratch_len());
                     p
                 });
+                forward_band.push(fwd.clone());
             }
         }
 
@@ -114,7 +114,6 @@ impl Gaussogram1d {
             forward_band,
             real_inverse,
             spectrum_len,
-            max_width,
             max_scratch,
         }
     }
@@ -130,32 +129,33 @@ impl Gaussogram1d {
     /// Allocate a reusable [`Scratch`] sized for this engine. Callers running
     /// many transforms (tight loops, per-thread workers, a Python handle) should
     /// allocate this once and pass it to the `*_with` methods to avoid
-    /// re-allocating `spectrum`, `real_in`, `band`, and `fft` on every call.
+    /// re-allocating `spectrum`, `real_in`, and `fft` on every call.
     pub fn alloc_scratch(&self) -> Scratch {
-        Scratch::new(
-            self.spectrum_len,
-            self.scheme.n,
-            self.max_width,
-            self.max_scratch,
-        )
+        Scratch::new(self.spectrum_len, self.scheme.n, self.max_scratch)
     }
 
-    /// Walk the bands: copy source slice -> apply window -> inverse FFT -> write.
+    /// Walk the bands: window the source slice (with the 1/width inverse-FFT
+    /// normalisation folded in) straight into the band's output slice, then
+    /// inverse-FFT it in place there. One pass over the data per band, no
+    /// intermediate buffer. The normalisation is applied before rather than
+    /// after the (linear) FFT, which is exact for power-of-two widths.
     /// Assumes `scratch.spectrum` already holds the (un-windowed) source spectrum.
     fn run_bands(&self, out: &mut [Complex<f64>], scratch: &mut Scratch) {
-        for (band, window) in self.scheme.bands.iter().zip(self.scheme.windows.iter()) {
+        for ((band, window), plan) in self
+            .scheme
+            .bands
+            .iter()
+            .zip(self.scheme.windows.iter())
+            .zip(self.inverse_band.iter())
+        {
             let w = band.width();
-            let src = &scratch.spectrum[band.src_lo..band.src_hi];
-            let buf = &mut scratch.band[..w];
-            for (b, (&s, &sc)) in buf.iter_mut().zip(src.iter().zip(window.screen.iter())) {
-                *b = s * sc;
-            }
-            let plan = &self.inverse_band[&w];
-            plan.process(buf, &mut scratch.fft);
             let inv = 1.0 / w as f64;
-            for (o, b) in out[band.out_off..band.out_off + w].iter_mut().zip(buf.iter()) {
-                *o = *b * inv;
+            let src = &scratch.spectrum[band.src_lo..band.src_hi];
+            let dst = &mut out[band.out_off..band.out_off + w];
+            for (o, (&s, &sc)) in dst.iter_mut().zip(src.iter().zip(window.screen.iter())) {
+                *o = s * (sc * inv);
             }
+            plan.process(dst, &mut scratch.fft);
         }
     }
 
@@ -385,10 +385,14 @@ impl Gaussogram1d {
 
         // Rebuild the half-spectrum band by band, in place: FFT(coeffs_band)
         // recovers S_slice * screen; divide by screen to recover S_slice.
-        for (band, window) in self.scheme.bands.iter().zip(self.scheme.windows.iter()) {
-            let w = band.width();
+        for ((band, window), plan) in self
+            .scheme
+            .bands
+            .iter()
+            .zip(self.scheme.windows.iter())
+            .zip(self.forward_band.iter())
+        {
             let buf = &mut scratch.spectrum[band.src_lo..band.src_hi];
-            let plan = &self.forward_band[&w];
             plan.process(buf, &mut scratch.fft);
             for (v, &sc) in buf.iter_mut().zip(window.screen.iter()) {
                 *v /= sc;

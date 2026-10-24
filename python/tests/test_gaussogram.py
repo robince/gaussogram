@@ -513,3 +513,93 @@ def test_coefficient_geometry_dyadic_complex_signed_frequencies():
         assert np.all(geo.freq[off : off + w] == sign * fc)
     adj = g.coefficient_adjacency(n, scheme="dyadic_complex")
     assert not np.any(adj.edge_type == 2)
+
+
+# ---- handle batch / out= ----------------------------------------------------
+
+
+@pytest.mark.parametrize("scheme", ["dyadic_dual_real", "dyadic_real"])
+def test_forward_batch_matches_rows(scheme):
+    n = 256
+    e = g.Gaussogram1d(n, scheme=scheme, bands_per_octave=2)
+    X = np.random.default_rng(3).standard_normal((7, n))
+    Y = e.forward_batch(X)
+    assert Y.shape == (7, e.output_len) and Y.dtype == np.complex128
+    assert Y.flags["C_CONTIGUOUS"]
+    for r in range(7):
+        np.testing.assert_array_equal(Y[r], e.forward(X[r]))
+    assert X.flags.writeable
+
+
+def test_forward_batch_out_and_empty():
+    n = 64
+    e = g.Gaussogram1d(n)
+    X = np.random.default_rng(4).standard_normal((3, n))
+    out = np.empty((3, e.output_len), dtype=np.complex128)
+    ret = e.forward_batch(X, out=out)
+    assert ret is out
+    np.testing.assert_array_equal(out, e.forward_batch(X))
+    assert e.forward_batch(np.empty((0, n))).shape == (0, e.output_len)
+
+
+def test_forward_batch_rejects_bad_shapes():
+    e = g.Gaussogram1d(64)
+    with pytest.raises(ValueError):
+        e.forward_batch(np.zeros((2, 32)))
+    with pytest.raises(ValueError):
+        e.forward_batch(np.zeros((2, 64)), out=np.empty((3, e.output_len), np.complex128))
+    with pytest.raises(Exception):
+        e.forward_batch(np.zeros((64, 2)).T)  # not C-contiguous
+
+
+def test_forward_out_writes_in_place():
+    n = 128
+    e = g.Gaussogram1d(n)
+    x = np.random.default_rng(5).standard_normal(n)
+    out = np.empty(e.output_len, dtype=np.complex128)
+    assert e.forward(x, out=out) is out
+    np.testing.assert_array_equal(out, e.forward(x))
+    with pytest.raises(Exception):
+        e.forward(x, out=np.empty(e.output_len + 1, dtype=np.complex128))
+
+
+def test_forward_batch_rejects_fortran_order_out():
+    e = g.Gaussogram1d(64)
+    X = np.zeros((2, 64))
+    with pytest.raises(ValueError):
+        e.forward_batch(X, out=np.empty((2, e.output_len), np.complex128, order="F"))
+
+
+def test_concurrent_forward_batch_on_shared_input_restores_flags():
+    # Overlapping batch calls on one array are reference counted: the array is
+    # writeable again only after the last call, and a read-only array stays so.
+    import threading
+
+    n = 2048
+    X = np.random.default_rng(8).standard_normal((32, n))
+    expected = g.Gaussogram1d(n).forward_batch(X)
+    engines = [g.Gaussogram1d(n) for _ in range(4)]
+    results, errors = [], []
+
+    def work(e):
+        try:
+            for _ in range(10):
+                results.append(e.forward_batch(X))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(e,)) for e in engines]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        raise errors[0]
+    assert len(results) == 40
+    assert X.flags.writeable
+    for r in results:
+        np.testing.assert_array_equal(r, expected)
+
+    X.flags.writeable = False
+    engines[0].forward_batch(X)
+    assert not X.flags.writeable

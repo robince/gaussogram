@@ -11,7 +11,9 @@ classdef Gaussogram1d < handle
 %
 %   The engine is fixed to length N and the scheme/window chosen at
 %   construction. forward() accepts a length-N column/row vector (one segment)
-%   or an N x count matrix (a batch, transformed in parallel). The handle is
+%   or an N x count matrix (a batch, transformed in parallel on one thread per
+%   CPU; inside parfor workers, setenv('RAYON_NUM_THREADS', '1') before the
+%   first transform to avoid oversubscription). The handle is
 %   freed automatically when the object is cleared or goes out of scope; you may
 %   also call delete(eng) explicitly.
 %

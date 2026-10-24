@@ -147,7 +147,8 @@ mxArray* forward_into_output(GaussogramHandle* h, const mxArray* sig_in, Handle*
     infer_segments(sig_in, &n, &count);
     size_t olen = gaussogram_output_len(h);
 
-    mxArray* result = mxCreateNumericMatrix(olen, count, mxDOUBLE_CLASS, mxCOMPLEX);
+    // Uninitialised: the transform overwrites every element (no zero-fill pass).
+    mxArray* result = mxCreateUninitNumericMatrix(olen, count, mxDOUBLE_CLASS, mxCOMPLEX);
     double* out = reinterpret_cast<double*>(mxGetComplexDoubles(result));
     const double* sig = mxGetDoubles(sig_in);
 
@@ -346,7 +347,7 @@ void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     Handle h;
     h.ptr = make_handle(GAUSSOGRAM_SCHEME_DYADIC_REAL, n, window_id, 0);
 
-    plhs[0] = mxCreateDoubleMatrix(n, 1, mxREAL);
+    plhs[0] = mxCreateUninitNumericMatrix(n, 1, mxDOUBLE_CLASS, mxREAL);
     double* out = mxGetDoubles(plhs[0]);
     int32_t st = gaussogram_inverse_real(h.ptr, coeffs, clen, out, n);
     if (st != GAUSSOGRAM_STATUS_OK) {
