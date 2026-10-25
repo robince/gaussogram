@@ -22,17 +22,18 @@ extern "C" {
 #define GAUSSOGRAM_STATUS_UNSUPPORTED_OPTION 10
 #define GAUSSOGRAM_STATUS_INTERNAL 99
 
-/* scheme_id values for gaussogram_create. */
+/* scheme_id values for gaussogram_create / gaussogram_create_ex. */
 #define GAUSSOGRAM_SCHEME_DYADIC_DUAL_REAL 0
 #define GAUSSOGRAM_SCHEME_DYADIC_REAL 1
 #define GAUSSOGRAM_SCHEME_DYADIC_COMPLEX 2
 
-/* window_id values for gaussogram_create. */
+/* window_id values for gaussogram_create / gaussogram_create_ex. */
 #define GAUSSOGRAM_WINDOW_GAUSSIAN 0
 #define GAUSSOGRAM_WINDOW_BOX 1
 
-/* top_window_id values for gaussogram_create: the shape of tiling A's top
- * band in dyadic_dual_real. Other schemes accept only the default (0).
+/* top_window_id values for gaussogram_create / gaussogram_create_ex: the
+ * shape of tiling A's top band in dyadic_dual_real. Other schemes accept only
+ * the default (0).
  * 1 keeps the meaning of the former nyquist_flat_top = 1. */
 #define GAUSSOGRAM_TOP_WINDOW_WIDE 0
 #define GAUSSOGRAM_TOP_WINDOW_FLAT 1
@@ -41,8 +42,9 @@ extern "C" {
 /* Opaque engine handle: build once (plans precomputed), transform many. */
 typedef struct GaussogramHandle GaussogramHandle;
 
-/* Create an engine. On success writes the handle to *out_handle and returns
- * GAUSSOGRAM_STATUS_OK; otherwise returns a non-zero status code. */
+/* Create an engine (one band per octave). On success writes the handle to
+ * *out_handle and returns GAUSSOGRAM_STATUS_OK; otherwise returns a non-zero
+ * status code. Same as gaussogram_create_ex with bands_per_octave = 1. */
 int32_t gaussogram_create(
     int32_t scheme_id,
     size_t n,
@@ -51,7 +53,21 @@ int32_t gaussogram_create(
     GaussogramHandle** out_handle
 );
 
-/* Destroy a handle created by gaussogram_create. */
+/* Create an engine whose dyadic octaves are each split into bands_per_octave
+ * sub-bands (a power of two >= 1). Both real schemes accept it and keep their
+ * output length (N-1 / N/2+1); dyadic_complex accepts only 1
+ * (GAUSSOGRAM_STATUS_UNSUPPORTED_OPTION otherwise). An invalid value returns
+ * GAUSSOGRAM_STATUS_BANDS_PER_OCTAVE. */
+int32_t gaussogram_create_ex(
+    int32_t scheme_id,
+    size_t n,
+    int32_t window_id,
+    int32_t top_window_id,
+    size_t bands_per_octave,
+    GaussogramHandle** out_handle
+);
+
+/* Destroy a handle created by gaussogram_create or gaussogram_create_ex. */
 void gaussogram_destroy(GaussogramHandle* handle);
 
 /* Packed output length (number of complex coefficients). */
@@ -76,6 +92,18 @@ int32_t gaussogram_forward_real_batch(
     const double* signals,
     size_t n,
     size_t count,
+    double* out,
+    size_t out_len_complex
+);
+
+/* Forward transform of one complex segment (dyadic_complex handles only;
+ * real-input handles return GAUSSOGRAM_STATUS_WRONG_INPUT_KIND). signal has
+ * 2 * signal_len_complex doubles and out 2 * out_len_complex doubles, both
+ * interleaved (re,im). */
+int32_t gaussogram_forward_complex(
+    const GaussogramHandle* handle,
+    const double* signal,
+    size_t signal_len_complex,
     double* out,
     size_t out_len_complex
 );

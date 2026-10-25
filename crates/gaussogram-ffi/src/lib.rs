@@ -45,6 +45,7 @@ fn engine_from_id(
     n: usize,
     window: WindowKind,
     top_window_id: i32,
+    bands_per_octave: usize,
 ) -> Result<Arc<Gaussogram1d>, i32> {
     let kind = match scheme_id {
         0 => SchemeKind::DyadicDualReal,
@@ -52,6 +53,13 @@ fn engine_from_id(
         2 => SchemeKind::DyadicComplex,
         _ => return Err(STATUS_UNKNOWN_SCHEME),
     };
+    // An invalid bands_per_octave (not a power of two >= 1) is reported as
+    // such for every scheme, before the per-scheme support checks below, so
+    // STATUS_UNSUPPORTED_OPTION only ever means a valid value the scheme
+    // does not support (or an unknown top_window id).
+    if !bands_per_octave.is_power_of_two() {
+        return Err(STATUS_BANDS_PER_OCTAVE);
+    }
     let Some(top_window) = top_window_from_id(top_window_id) else {
         return Err(STATUS_UNSUPPORTED_OPTION);
     };
@@ -60,14 +68,15 @@ fn engine_from_id(
     if top_window_id != 0 && kind != SchemeKind::DyadicDualReal {
         return Err(STATUS_UNSUPPORTED_OPTION);
     }
-    // The C ABI does not yet expose bands_per_octave; the one-band-per-octave
-    // cover (bpo = 1) keeps the existing ABI and golden parity unchanged.
+    if bands_per_octave != 1 && kind == SchemeKind::DyadicComplex {
+        return Err(STATUS_UNSUPPORTED_OPTION);
+    }
     cached_engine(SchemeSpec {
         kind,
         n,
         window,
         top_window,
-        bands_per_octave: 1,
+        bands_per_octave,
     })
     .map_err(|e| e.status_code())
 }
@@ -91,12 +100,13 @@ fn kind_from_id(window_id: i32) -> Option<WindowKind> {
     }
 }
 
-/// Create an engine. `scheme_id`: 0=dyadic_dual_real, 1=dyadic_real,
-/// 2=dyadic_complex. `window_id`: 0=gaussian, 1=box. `top_window_id` (the
-/// top band of dyadic_dual_real): 0=wide Gaussian (default), 1=flat top,
-/// 2=plain Gaussian; other schemes accept only 0, and an unknown id returns
-/// STATUS_UNSUPPORTED_OPTION. On success writes the handle pointer to
-/// `*out_handle` and returns STATUS_OK.
+/// Create an engine with one band per octave. `scheme_id`: 0=dyadic_dual_real,
+/// 1=dyadic_real, 2=dyadic_complex. `window_id`: 0=gaussian, 1=box.
+/// `top_window_id` (the top band of dyadic_dual_real): 0=wide Gaussian
+/// (default), 1=flat top, 2=plain Gaussian; other schemes accept only 0, and an
+/// unknown id returns STATUS_UNSUPPORTED_OPTION. On success writes the handle
+/// pointer to `*out_handle` and returns STATUS_OK.
+/// Equivalent to `gaussogram_create_ex(..., bands_per_octave = 1, ...)`.
 ///
 /// # Safety
 /// `out_handle` must be a valid pointer to a `*mut GaussogramHandle`.
@@ -108,14 +118,38 @@ pub unsafe extern "C" fn gaussogram_create(
     top_window_id: i32,
     out_handle: *mut *mut GaussogramHandle,
 ) -> i32 {
+    unsafe { gaussogram_create_ex(scheme_id, n, window_id, top_window_id, 1, out_handle) }
+}
+
+/// Create an engine with `bands_per_octave` sub-bands per dyadic octave (a
+/// power of two >= 1; `1` is the `gaussogram_create` cover). Both real schemes
+/// accept it and keep their output length; `dyadic_complex` accepts only `1`
+/// (`STATUS_UNSUPPORTED_OPTION` otherwise). An invalid value returns
+/// `STATUS_BANDS_PER_OCTAVE`. Other arguments as for `gaussogram_create`.
+///
+/// # Safety
+/// `out_handle` must be a valid pointer to a `*mut GaussogramHandle`.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_create_ex(
+    scheme_id: i32,
+    n: usize,
+    window_id: i32,
+    top_window_id: i32,
+    bands_per_octave: usize,
+    out_handle: *mut *mut GaussogramHandle,
+) -> i32 {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        if out_handle.is_null() {
+            return STATUS_INTERNAL;
+        }
         let Some(kind) = kind_from_id(window_id) else {
             return STATUS_UNKNOWN_WINDOW;
         };
-        let engine = match engine_from_id(scheme_id, n, kind, top_window_id) {
-            Ok(e) => e,
-            Err(status) => return status,
-        };
+        let engine =
+            match engine_from_id(scheme_id, n, kind, top_window_id, bands_per_octave) {
+                Ok(e) => e,
+                Err(status) => return status,
+            };
         let scratch = Mutex::new(engine.alloc_scratch());
         let boxed = Box::new(GaussogramHandle { engine, scratch });
         unsafe {
@@ -126,10 +160,11 @@ pub unsafe extern "C" fn gaussogram_create(
     result.unwrap_or(STATUS_INTERNAL)
 }
 
-/// Destroy a handle created by `gaussogram_create`.
+/// Destroy a handle created by `gaussogram_create` or `gaussogram_create_ex`.
 ///
 /// # Safety
-/// `handle` must have been returned by `gaussogram_create` and not yet freed.
+/// `handle` must have been returned by `gaussogram_create` /
+/// `gaussogram_create_ex` and not yet freed.
 #[no_mangle]
 pub unsafe extern "C" fn gaussogram_destroy(handle: *mut GaussogramHandle) {
     if !handle.is_null() {
@@ -205,6 +240,40 @@ pub unsafe extern "C" fn gaussogram_forward_real_batch(
         let out_complex =
             unsafe { slice::from_raw_parts_mut(out as *mut Complex<f64>, out_len_complex) };
         match engine.forward_batch(&segs, out_complex) {
+            Ok(()) => STATUS_OK,
+            Err(e) => e.status_code(),
+        }
+    }));
+    result.unwrap_or(STATUS_INTERNAL)
+}
+
+/// Forward transform of one complex segment (`dyadic_complex` handles only;
+/// a real-input handle returns `STATUS_WRONG_INPUT_KIND`). `signal` has
+/// `2 * signal_len_complex` doubles and `out` has `2 * out_len_complex`
+/// doubles, both interleaved (re,im).
+///
+/// # Safety
+/// Pointers must be valid for the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn gaussogram_forward_complex(
+    handle: *const GaussogramHandle,
+    signal: *const f64,
+    signal_len_complex: usize,
+    out: *mut f64,
+    out_len_complex: usize,
+) -> i32 {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        if handle.is_null() || signal.is_null() || out.is_null() {
+            return STATUS_INTERNAL;
+        }
+        let handle = unsafe { &*handle };
+        let sig =
+            unsafe { slice::from_raw_parts(signal as *const Complex<f64>, signal_len_complex) };
+        let out_complex =
+            unsafe { slice::from_raw_parts_mut(out as *mut Complex<f64>, out_len_complex) };
+        match handle
+            .with_scratch(|engine, scratch| engine.forward_complex_with(sig, out_complex, scratch))
+        {
             Ok(()) => STATUS_OK,
             Err(e) => e.status_code(),
         }

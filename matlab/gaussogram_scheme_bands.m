@@ -1,7 +1,8 @@
 function bands = gaussogram_scheme_bands(n, varargin)
 %GAUSSOGRAM_SCHEME_BANDS  Per-band layout of a scheme at length N.
 %   bands = GAUSSOGRAM_SCHEME_BANDS(n)
-%   bands = GAUSSOGRAM_SCHEME_BANDS(n, 'scheme', s, 'window', w, 'top_window', t)
+%   bands = GAUSSOGRAM_SCHEME_BANDS(n, 'scheme', s, 'window', w, 'top_window', t, ...
+%                                   'bands_per_octave', b)
 %
 %   Returns a struct with parallel column vectors describing each band:
 %     bands.src_lo   - low frequency-bin index the band starts at (0-based).
@@ -11,16 +12,20 @@ function bands = gaussogram_scheme_bands(n, varargin)
 %                      output vector (0-based).
 %     bands.src_hi   - src_lo + width (convenience).
 %
-%   These mirror the Python BandLayout fields and feed GAUSSOGRAM_TO_GRID.
+%   These mirror the Python BandLayout fields and feed GAUSSOGRAM_TO_GRID and
+%   GAUSSOGRAM_COEFFICIENT_GEOMETRY. With 'bands_per_octave' > 1 each dyadic
+%   octave holds that many sub-bands (fewer in octaves narrower than that).
 %
-%   See also GAUSSOGRAM, GAUSSOGRAM_TO_GRID, GAUSSOGRAM_OUTPUT_LEN.
+%   See also GAUSSOGRAM, GAUSSOGRAM_TO_GRID, GAUSSOGRAM_OUTPUT_LEN,
+%   GAUSSOGRAM_COEFFICIENT_GEOMETRY.
 
 opts = gaussogram_parse_opts(varargin{:});
 [scheme_id, window_id] = gaussogram_ids(opts.scheme, opts.window);
 
 gaussogram_check_built();
+% nb x 4 [lo, width, fcentre, out_off]
 m = gaussogram_mex('scheme_bands', double(n), scheme_id, window_id, ...
-    opts.top_window_id);   % nb x 4 [lo, width, fcentre, out_off]
+    opts.top_window_id, opts.bands_per_octave);
 
 bands.src_lo  = m(:, 1);
 bands.width   = m(:, 2);

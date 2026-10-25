@@ -23,9 +23,23 @@ passed = passed + run_case(@t_handle_reused_and_batch);
 passed = passed + run_case(@t_handle_rejects_wrong_length);
 passed = passed + run_case(@t_handle_survives_save_load);
 passed = passed + run_case(@t_stale_handle_rejected);
-passed = passed + run_case(@t_rejects_dyadic_complex_forward);
+passed = passed + run_case(@t_dyadic_complex_forward);
 passed = passed + run_case(@t_rejects_non_integer_n);
 passed = passed + run_case(@t_partitions_and_inverse_validate);
+passed = passed + run_case(@t_bpo_output_len_and_bands);
+passed = passed + run_case(@t_bpo_roundtrip_dyadic_real);
+passed = passed + run_case(@t_bpo_handle_matches_function);
+passed = passed + run_case(@t_bpo_rejects_invalid);
+passed = passed + run_case(@t_bpo_to_grid);
+passed = passed + run_case(@t_handle_inverse);
+passed = passed + run_case(@t_dual_inverse_roundtrip);
+passed = passed + run_case(@t_inverse_validation);
+passed = passed + run_case(@t_dual_inverse_match_python);
+passed = passed + run_case(@t_geometry_fields);
+passed = passed + run_case(@t_adjacency_structure);
+passed = passed + run_case(@t_adjacency_circular_wrap);
+passed = passed + run_case(@t_sparse_adjacency);
+passed = passed + run_case(@t_geometry_adjacency_match_python);
 passed = passed + run_case(@t_top_window_options);
 
 fprintf('\nAll %d gaussogram test cases passed.\n', passed);
@@ -346,14 +360,36 @@ end
 assert_true(threw, 'a non-finite n should be rejected');
 end
 
-function t_rejects_dyadic_complex_forward()
+function t_dyadic_complex_forward()
+n = 64;
+rng(5);
+Z = complex(randn(n, 3), randn(n, 3));
+c = gaussogram(Z(:, 1), 'scheme', 'dyadic_complex');
+assert_true(isequal(size(c), [n, 1]), 'dyadic_complex output should be N x 1');
+assert_true(all(isfinite(c)), 'dyadic_complex coefficients should be finite');
+% Linear in the input, and a real signal is promoted to complex.
+cx = gaussogram(real(Z(:, 1)), 'scheme', 'dyadic_complex');
+cy = gaussogram(imag(Z(:, 1)), 'scheme', 'dyadic_complex');
+assert_true(max(abs(c - (cx + 1i * cy))) < 1e-10, 'complex forward should be linear');
+% Batch (one column at a time in the MEX) matches single transforms, and a
+% persistent engine matches the function.
+batch = gaussogram(Z, 'scheme', 'dyadic_complex');
+eng = Gaussogram1d(n, 'scheme', 'dyadic_complex');
+assert_true(eng.output_len == n && ~eng.invertible, 'complex engine properties');
+for k = 1:3
+    ck = gaussogram(Z(:, k), 'scheme', 'dyadic_complex');
+    assert_true(isequal(batch(:, k), ck), 'complex batch column should match single');
+    assert_true(isequal(eng.forward(Z(:, k)), ck), 'complex engine should match function');
+end
+delete(eng);
+% Complex input to a real scheme is still rejected.
 threw = false;
 try
-    gaussogram(ones(64, 1), 'scheme', 'dyadic_complex');
+    gaussogram(Z(:, 1));
 catch err
-    threw = strcmp(err.identifier, 'gaussogram:scheme');
+    threw = strcmp(err.identifier, 'gaussogram:signal');
 end
-assert_true(threw, 'dyadic_complex forward should be rejected clearly');
+assert_true(threw, 'complex input to a real scheme should be rejected');
 end
 
 function t_rejects_non_integer_n()
@@ -364,6 +400,436 @@ catch
     threw = true;
 end
 assert_true(threw, 'a non-integer n should be rejected');
+end
+
+% -- bands_per_octave ------------------------------------------------------
+
+function t_bpo_output_len_and_bands()
+n = 256;
+for scheme = {'dyadic_dual_real', 'dyadic_real'}
+    nb_prev = 0;
+    for bpo = [1, 2, 4, 8]
+        args = {'scheme', scheme{1}, 'bands_per_octave', bpo};
+        olen = gaussogram_output_len(n, args{:});
+        assert_true(olen == gaussogram_output_len(n, 'scheme', scheme{1}), ...
+            sprintf('%s output_len should not depend on bpo (bpo=%d)', scheme{1}, bpo));
+        bands = gaussogram_scheme_bands(n, args{:});
+        nb = numel(bands.width);
+        assert_true(nb > nb_prev, 'more bands per octave should give more bands');
+        nb_prev = nb;
+        assert_true(bands.out_off(1) == 0 && ...
+            isequal(bands.out_off(2:end), bands.out_off(1:end - 1) + bands.width(1:end - 1)), ...
+            'bands should pack the output contiguously');
+        assert_true(bands.out_off(end) + bands.width(end) == olen, 'bands should tile the output');
+        assert_true(all(bitand(bands.width, bands.width - 1) == 0), 'band widths are powers of two');
+        if strcmp(scheme{1}, 'dyadic_real')
+            % A disjoint cover of 0..N/2.
+            assert_true(isequal(bands.src_lo(2:end), bands.src_hi(1:end - 1)) && ...
+                bands.src_lo(1) == 0 && bands.src_hi(end) == n / 2 + 1, ...
+                'dyadic_real bands should partition 0..N/2');
+        end
+    end
+end
+% bpo = 2 at n = 256: DC, the width-1 octave [1,2), six split octaves
+% [2,4) .. [64,128), and the Nyquist bin: 1 + 1 + 2*6 + 1 = 15 bands.
+bands = gaussogram_scheme_bands(n, 'scheme', 'dyadic_real', 'bands_per_octave', 2);
+assert_true(numel(bands.width) == 15, 'dyadic_real bpo=2 band count at n=256');
+end
+
+function t_bpo_roundtrip_dyadic_real()
+n = 256;
+rng(21);
+sig = randn(n, 1);
+c1 = gaussogram(sig, 'scheme', 'dyadic_real');
+for bpo = [1, 2, 4, 8]
+    c = gaussogram(sig, 'scheme', 'dyadic_real', 'bands_per_octave', bpo);
+    assert_true(numel(c) == n / 2 + 1, 'dyadic_real bpo coeff count should be N/2+1');
+    if bpo > 1
+        assert_true(max(abs(c - c1)) > 1e-6, 'bpo > 1 should change the coefficients');
+    end
+    rec = gaussogram_inverse_real(c, 'bands_per_octave', bpo);
+    err = max(abs(rec - sig));
+    assert_true(err < 1e-9, sprintf('bpo=%d round-trip error too large: %g', bpo, err));
+    rec_box = gaussogram_inverse_real( ...
+        gaussogram(sig, 'scheme', 'dyadic_real', 'window', 'box', 'bands_per_octave', bpo), ...
+        'window', 'box', 'bands_per_octave', bpo);
+    assert_true(max(abs(rec_box - sig)) < 1e-9, sprintf('box bpo=%d round trip', bpo));
+end
+cdual = gaussogram(sig, 'bands_per_octave', 4, 'top_window', 'flat');
+assert_true(numel(cdual) == n - 1 && all(isfinite(cdual)), 'dual bpo=4 flat-top forward');
+end
+
+function t_bpo_handle_matches_function()
+n = 128;
+rng(22);
+X = randn(n, 4);
+for scheme = {'dyadic_dual_real', 'dyadic_real'}
+    eng = Gaussogram1d(n, 'scheme', scheme{1}, 'bands_per_octave', 4);
+    assert_true(eng.bands_per_octave == 4, 'engine should record bands_per_octave');
+    expected = gaussogram(X, 'scheme', scheme{1}, 'bands_per_octave', 4);
+    assert_true(isequal(eng.forward(X), expected), 'bpo engine batch should match function');
+    assert_true(isequal(eng.forward(X(:, 2)), expected(:, 2)), ...
+        'bpo engine single should match function');
+    % A loaded copy rebuilds with the same bands_per_octave.
+    f = [tempname, '.mat'];
+    save(f, 'eng');
+    s = load(f);
+    delete(f);
+    assert_true(isequal(s.eng.forward(X(:, 1)), expected(:, 1)), ...
+        'a loaded bpo engine should rebuild with the same layout');
+    delete(s.eng);
+    delete(eng);
+end
+end
+
+function t_bpo_rejects_invalid()
+bad = {0, 3, 6, 1.5, -2, [1, 2], 'two', NaN, Inf};
+for i = 1:numel(bad)
+    calls = { ...
+        @() gaussogram(randn(64, 1), 'bands_per_octave', bad{i}), ...
+        @() gaussogram_output_len(64, 'bands_per_octave', bad{i}), ...
+        @() Gaussogram1d(64, 'bands_per_octave', bad{i}), ...
+        @() gaussogram_inverse_real(complex(zeros(33, 1)), 'bands_per_octave', bad{i})};
+    for k = 1:numel(calls)
+        threw = false;
+        try
+            calls{k}();
+        catch err
+            threw = strcmp(err.identifier, 'gaussogram:bands_per_octave');
+        end
+        assert_true(threw, sprintf('bands_per_octave = %s should be rejected (call %d)', ...
+            mat2str(bad{i}), k));
+    end
+end
+% dyadic_complex has no sub-octave variant.
+threw = false;
+try
+    gaussogram(randn(64, 1), 'scheme', 'dyadic_complex', 'bands_per_octave', 2);
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:create');
+end
+assert_true(threw, 'dyadic_complex with bands_per_octave > 1 should be rejected');
+end
+
+function t_bpo_to_grid()
+n = 256;
+t = (0:n-1)' / n;
+sig = sin(2 * pi * 40 * t) + sin(2 * pi * 46 * t);
+c1 = gaussogram(sig);
+c4 = gaussogram(sig, 'bands_per_octave', 4);
+for f = {'block', 'linear', 'gauss'}
+    g1 = gaussogram_to_grid(c1, n, 'interp_freq', f{1});
+    g4 = gaussogram_to_grid(c4, n, 'interp_freq', f{1}, 'bands_per_octave', 4);
+    assert_true(isequal(size(g4), [n / 2 + 1, n]) && all(isfinite(g4(:))), ...
+        sprintf('bpo=4 %s grid shape', f{1}));
+    assert_true(~isequal(g1, g4), sprintf('bpo=4 %s grid should differ from bpo=1', f{1}));
+end
+end
+
+function t_handle_inverse()
+n = 128;
+rng(23);
+sig = randn(n, 1);
+for bpo = [1, 2]
+    eng = Gaussogram1d(n, 'scheme', 'dyadic_real', 'bands_per_octave', bpo);
+    assert_true(eng.invertible, 'dyadic_real engine should be invertible');
+    c = eng.forward(sig);
+    rec = eng.inverse(c);
+    assert_true(iscolumn(rec) && numel(rec) == n, 'handle inverse should return N x 1');
+    assert_true(max(abs(rec - sig)) < 1e-9, 'handle inverse round trip');
+    assert_true(isequal(rec, gaussogram_inverse_real(c, 'bands_per_octave', bpo)), ...
+        'handle inverse should match gaussogram_inverse_real');
+    assert_true(max(abs(eng.inverse(c.') - sig)) < 1e-9, 'row coeffs should be accepted');
+    threw = false;
+    try
+        eng.inverse(c(1:end - 1));
+    catch err
+        threw = strcmp(err.identifier, 'gaussogram:inverse');
+    end
+    assert_true(threw, 'a wrong-length inverse should be rejected');
+    delete(eng);
+end
+eng = Gaussogram1d(n, 'scheme', 'dyadic_complex');
+assert_true(~eng.invertible, 'dyadic_complex engine should not be invertible');
+threw = false;
+try
+    eng.inverse(eng.forward(sig));
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:notInvertible');
+end
+assert_true(threw, 'dyadic_complex engine inverse should be rejected clearly');
+delete(eng);
+end
+
+function t_dual_inverse_roundtrip()
+n = 256;
+rng(24);
+sig = randn(n, 1);
+% The default pair: forward is dyadic_dual_real, inverse infers it from N-1.
+rec = gaussogram_inverse_real(gaussogram(sig));
+assert_true(iscolumn(rec) && numel(rec) == n, 'default inverse should return N x 1');
+assert_true(max(abs(rec - sig)) < 1e-10, 'default forward/inverse pair should round trip');
+for bpo = [1, 4]
+    for top = {'wide', 'gaussian', 'flat'}
+        opts = {'bands_per_octave', bpo, 'top_window', top{1}};
+        label = sprintf('bpo=%d top_window=%s', bpo, top{1});
+        c = gaussogram(sig, opts{:});
+        explicit = gaussogram_inverse_real(c, 'scheme', 'dyadic_dual_real', opts{:});
+        inferred = gaussogram_inverse_real(c, opts{:});
+        assert_true(max(abs(explicit - sig)) < 1e-10, ['explicit-scheme dual round trip ', label]);
+        assert_true(isequal(inferred, explicit), ['inferred scheme should match explicit ', label]);
+        eng = Gaussogram1d(n, opts{:});
+        assert_true(eng.invertible, 'dual engine should be invertible');
+        from_handle = eng.inverse(eng.forward(sig));
+        assert_true(max(abs(from_handle - sig)) < 1e-10, ['handle dual round trip ', label]);
+        delete(eng);
+    end
+end
+% The inferred dyadic_real path is unchanged.
+c = gaussogram(sig, 'scheme', 'dyadic_real');
+assert_true(max(abs(gaussogram_inverse_real(c) - sig)) < 1e-10, 'inferred dyadic_real');
+end
+
+function t_inverse_validation()
+c = gaussogram(randn(64, 1));   % 63 coeffs: dyadic_dual_real
+cases = { ...
+    {c(1:end - 1), {}, 'gaussogram:coeffsLen'}, ...          % 62: neither 2^k+1 nor 2^k-1
+    {complex(zeros(2, 1)), {}, 'gaussogram:coeffsLen'}, ...  % too short to infer
+    {c, {'scheme', 'dyadic_complex'}, 'gaussogram:notInvertible'}, ...
+    {c(1:33), {'top_window', 'flat'}, 'gaussogram:top_window'}, ...  % inferred dyadic_real
+    {c, {'scheme', 'dyadic_real'}, 'gaussogram:create'}, ...  % 63 -> N = 124, not a power of two
+    {c, {'scheme', 'dyadic_wavelet'}, 'gaussogram:scheme'}, ...
+    };
+for i = 1:numel(cases)
+    threw = false;
+    got = '';
+    try
+        gaussogram_inverse_real(cases{i}{1}, cases{i}{2}{:});
+    catch err
+        got = err.identifier;
+        threw = strcmp(got, cases{i}{3});
+    end
+    assert_true(threw, sprintf('inverse case %d should raise %s (got %s)', i, cases{i}{3}, got));
+end
+end
+
+function t_dual_inverse_match_python()
+% The frame inverse of coefficients that are not the transform of any signal
+% returns the least-squares signal, so it depends on the inverse's weighting.
+% Expected values were computed with the Python package on main after #14
+% (gaussogram.inverse_real, energy-weighted least squares); this pins that
+% weighting. Coefficients: c(k) = cos(0.7 k) + 1i sin(0.3 k + 0.1), k = 0..N-2.
+% They predate top_window: flat = false was the plain Gaussian top band.
+ref = { ...
+    {16, 1, false, [0.23735514131639318, 0.04131866173983578, -0.13381439439620707, ...
+        0.2415513589301889, -0.3526803088842539, 0.16281414011217932, 0.24716389278908463, ...
+        -0.1768259347669025, -0.034712116398329995, -0.19175489583024696, 0.12608176008089794, ...
+        -0.2863765291937198, 0.7995829872325604, -0.3717906272808358, -0.001194022485020249, ...
+        0.6932808870343763]}, ...
+    {32, 2, true, [0.05174457722692837, -0.22370111100675505, 0.047875091655407986, ...
+        0.10866159143377337, 0.1658192266891606, -0.007452396050025657, 0.08335234440377465, ...
+        -0.03647390930554649, -0.02858703105750511, 0.3024781667078925, -0.21473775015694885, ...
+        -0.039120036548101006, 0.23288079375728593, -0.33202577706495956, -0.07044129386873069, ...
+        0.1660871257686367, 0.03685852715217971, -0.023915568595938783, -0.2562243681443899, ...
+        0.13266162443083584, 0.009428192568211383, -0.07027448429841968, 0.308996314495591, ...
+        -0.2351881779357844, -0.10006683447985586, 0.22195777145740292, 0.10658448621818473, ...
+        -0.04314344540914056, 0.006332648864690371, 0.289811799299905, 0.22168750658539085, ...
+        0.1881343952068496]}, ...
+    };
+for r = 1:numel(ref)
+    [n, bpo, flat, expected] = ref{r}{:};
+    k = (0:(n - 2)).';
+    c = cos(0.7 * k) + 1i * sin(0.3 * k + 0.1);
+    tops = {'gaussian', 'flat'};
+    opts = {'bands_per_octave', bpo, 'top_window', tops{flat + 1}};
+    x = gaussogram_inverse_real(c, opts{:});
+    err = max(abs(x - expected(:)));
+    assert_true(err < 1e-12, sprintf('dual inverse differs from Python (n=%d): %g', n, err));
+    eng = Gaussogram1d(n, opts{:});
+    assert_true(max(abs(eng.inverse(c) - expected(:))) < 1e-12, ...
+        sprintf('handle dual inverse differs from Python (n=%d)', n));
+    delete(eng);
+end
+end
+
+% -- geometry / adjacency --------------------------------------------------
+
+function t_geometry_fields()
+n = 128;
+for cfg = {{'dyadic_dual_real', 1}, {'dyadic_dual_real', 4}, {'dyadic_real', 2}, ...
+        {'dyadic_complex', 1}}
+    args = {'scheme', cfg{1}{1}, 'bands_per_octave', cfg{1}{2}};
+    geo = gaussogram_coefficient_geometry(n, args{:});
+    olen = gaussogram_output_len(n, args{:});
+    bands = gaussogram_scheme_bands(n, args{:});
+    assert_true(isequal(fieldnames(geo), ...
+        {'time'; 'freq'; 'dt'; 'df'; 'logf'; 'level'; 'sub'; 'tiling'; 'band'}), ...
+        'geometry field names should match Python CoeffGeometry');
+    for f = fieldnames(geo).'
+        assert_true(isequal(size(geo.(f{1})), [olen, 1]), ...
+            sprintf('geometry field %s should be output_len x 1', f{1}));
+    end
+    assert_true(all(geo.dt .* geo.df == n), 'every tile should have area n');
+    assert_true(all(geo.time >= 0 & geo.time < n), 'tile times should lie in [0, n)');
+    assert_true(isequal(geo.df, bands.width(geo.band)), 'band index should be 1-based');
+    assert_true(isequal(abs(geo.freq), bands.fcentre(geo.band)), 'freq is the band centre');
+    assert_true(isequal(geo.logf, log2(max(abs(geo.freq), 0.5))), 'logf definition');
+    assert_true(isequal(geo.level, floor(log2(max(abs(geo.freq), 1)))), 'level definition');
+    if strcmp(cfg{1}{1}, 'dyadic_dual_real')
+        assert_true(isequal(geo.tiling, double((1:olen).' > n / 2 + 1)), ...
+            'tiling A is the first N/2+1 coefficients');
+    else
+        assert_true(all(geo.tiling == 0), 'single-tiling schemes have tiling 0');
+    end
+end
+end
+
+function t_adjacency_structure()
+n = 128;
+for cfg = {{'dyadic_dual_real', 1}, {'dyadic_dual_real', 2}, {'dyadic_real', 4}, ...
+        {'dyadic_complex', 1}}
+    for circular = [false, true]
+        args = {'scheme', cfg{1}{1}, 'bands_per_octave', cfg{1}{2}};
+        adj = gaussogram_coefficient_adjacency(n, args{:}, 'circular', circular);
+        olen = gaussogram_output_len(n, args{:});
+        e = numel(adj.edge_type);
+        assert_true(isequal(fieldnames(adj), ...
+            {'edge_index'; 'edge_type'; 'edge_weight'; 'type_names'}), 'adjacency field names');
+        assert_true(isequal(size(adj.edge_index), [2, e]) && ...
+            isequal(size(adj.edge_weight), [1, e]), 'adjacency field shapes');
+        assert_true(all(adj.edge_index(1, :) < adj.edge_index(2, :)), 'edges stored with i < j');
+        assert_true(min(adj.edge_index(:)) >= 1 && max(adj.edge_index(:)) <= olen, ...
+            'edge indices should be 1-based coefficient indices');
+        triples = [adj.edge_index; adj.edge_type].';
+        assert_true(size(unique(triples, 'rows'), 1) == e, 'no duplicate edges');
+        assert_true(all(adj.edge_weight == 1), 'structural weights are 1');
+        has_dual = any(adj.edge_type == 2);
+        assert_true(has_dual == strcmp(cfg{1}{1}, 'dyadic_dual_real'), ...
+            'dual edges only for dyadic_dual_real');
+        % The time edges within a band of width w number w-1 (+1 if circular, w >= 3).
+        bands = gaussogram_scheme_bands(n, args{:});
+        expected_time = sum(max(bands.width - 1, 0)) + circular * sum(bands.width >= 3);
+        assert_true(nnz(adj.edge_type == 0) == expected_time, 'time edge count');
+    end
+end
+end
+
+function t_adjacency_circular_wrap()
+n = 64;
+bands = gaussogram_scheme_bands(n);
+lin = gaussogram_coefficient_adjacency(n);
+circ = gaussogram_coefficient_adjacency(n, 'circular', true);
+% Each band of width >= 3 gains exactly its first<->last wrap-around time edge.
+wrap = zeros(2, 0);
+for b = find(bands.width >= 3).'
+    wrap(:, end + 1) = bands.out_off(b) + [1; bands.width(b)];   %#ok<AGROW>
+end
+tl = lin.edge_index(:, lin.edge_type == 0);
+tc = circ.edge_index(:, circ.edge_type == 0);
+assert_true(size(tc, 2) - size(tl, 2) == size(wrap, 2), 'circular adds one time edge per band');
+assert_true(isequal(sortrows(setdiff(tc.', tl.', 'rows')), sortrows(wrap.')), ...
+    'the added time edges are the wrap-around pairs');
+% No non-circular edge joins the end of a band to its start.
+assert_true(~any(ismember(wrap.', tl.', 'rows')), 'non-circular graph has no wrap edges');
+% Circular cross-band edges wrap too, so there are at least as many.
+assert_true(nnz(circ.edge_type == 1) >= nnz(lin.edge_type == 1), 'circular band edges');
+threw = false;
+try
+    gaussogram_coefficient_adjacency(n, 'circular', 'yes');
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:circular');
+end
+assert_true(threw, 'a non-logical circular should be rejected');
+end
+
+function t_sparse_adjacency()
+n = 64;
+adj = gaussogram_coefficient_adjacency(n);
+olen = gaussogram_output_len(n);
+A = gaussogram_to_sparse_adjacency(adj, olen);
+assert_true(issparse(A) && isequal(size(A), [olen, olen]), 'sparse adjacency shape');
+assert_true(isequal(A, A.'), 'default adjacency should be symmetric');
+ntb = nnz(adj.edge_type <= 1);
+assert_true(full(sum(A(:))) == 2 * ntb, 'default types are time + band');
+Ad = gaussogram_to_sparse_adjacency(adj, olen, 'types', {'time', 'band', 'dual'});
+assert_true(full(sum(Ad(:))) == 2 * numel(adj.edge_type), 'all types include dual');
+At = gaussogram_to_sparse_adjacency(adj, olen, 'types', 0, 'symmetric', false);
+assert_true(nnz(At) == nnz(adj.edge_type == 0) && istriu(At), ...
+    'one-directional time-only adjacency is upper triangular');
+assert_true(isequal(At, gaussogram_to_sparse_adjacency(adj, olen, 'types', {'time'}, ...
+    'symmetric', false)), 'type names and ids should select the same edges');
+adjw = adj;
+adjw.edge_weight(:) = 0.5;
+Aw = gaussogram_to_sparse_adjacency(adjw, olen, 'weighted', true);
+assert_true(isequal(Aw, 0.5 * A), 'weighted uses edge_weight');
+% Each tiling's time + band graph is connected; the dual edges join the two.
+assert_true(max(conncomp(graph(A))) == 2, 'time + band graph has one component per tiling');
+assert_true(all(conncomp(graph(Ad)) == 1), 'all-types graph should be connected');
+for bad = {{adj, olen - 1}, {adj, olen, 'types', {'scale'}}, {struct('x', 1), olen}}
+    threw = false;
+    try
+        gaussogram_to_sparse_adjacency(bad{1}{:});
+    catch err
+        threw = startsWith(err.identifier, 'gaussogram:');
+    end
+    assert_true(threw, 'invalid sparse adjacency arguments should be rejected');
+end
+end
+
+function t_geometry_adjacency_match_python()
+% Reference values computed with the Python package (gaussogram.
+% coefficient_geometry / coefficient_adjacency / to_sparse_adjacency) on the
+% same configurations. Python indices are 0-based; these are converted to
+% MATLAB's 1-based ones. Columns: n, scheme, bands_per_octave, circular,
+% edge counts per type [time band dual], an order-sensitive edge hash
+% sum(k * (i + 1000 j)) over edges k, geometry sums [time freq dt level sub
+% tiling band logf sum(k*sub)], nnz and sum of the default sparse matrix, sum
+% of the all-types sparse matrix.
+ref = { ...
+    {16, 'dyadic_dual_real', 1, false, [8, 17, 13], 8459237, ...
+     [64.0, 59.0, 112.0, 23.0, 1.0, 6.0, 70.0, 25.509775004326936, 2.0], 50, 50, 76}, ...
+    {64, 'dyadic_dual_real', 2, true, [53, 79, 66], 875766860, ...
+     [1440.0, 966.0, 1152.0, 201.0, 30.0, 30.0, 737.0, 224.5843997480469, 1042.0], 264, 264, 396}, ...
+    {64, 'dyadic_dual_real', 4, false, [35, 65, 61], 591567950, ...
+     [1120.0, 1004.0, 1792.0, 201.0, 82.0, 30.0, 1087.0, 227.17472772880168, 2919.0], 200, 200, 322}, ...
+    {64, 'dyadic_real', 2, true, [26, 45, 0], 58237975, ...
+     [704.0, 542.0, 704.0, 103.0, 16.0, 0.0, 255.0, 118.39492473795067, 307.0], 142, 142, 142}, ...
+    {32, 'dyadic_complex', 1, true, [26, 43, 0], 43486252, ...
+     [352.0, -2.0, 320.0, 69.0, 2.0, 0.0, 176.0, 84.37895002019238, 33.0], 138, 138, 138}, ...
+    {128, 'dyadic_dual_real', 1, true, [122, 215, 154], 10607122455, ...
+     [7296.0, 3475.0, 1664.0, 522.0, 1.0, 62.0, 1147.0, 557.2676750447116, 2.0], 674, 674, 982}, ...
+    };
+for r = 1:numel(ref)
+    [n, scheme, bpo, circular, counts, ehash, gsum, nz, asum, adsum] = ref{r}{:};
+    label = sprintf('%s n=%d bpo=%d circular=%d', scheme, n, bpo, circular);
+    args = {'scheme', scheme, 'bands_per_octave', bpo};
+    adj = gaussogram_coefficient_adjacency(n, args{:}, 'circular', circular);
+    geo = gaussogram_coefficient_geometry(n, args{:});
+    got_counts = arrayfun(@(t) nnz(adj.edge_type == t), 0:2);
+    assert_true(isequal(got_counts, counts), ['edge counts differ from Python: ', label]);
+    k = 1:numel(adj.edge_type);
+    got_hash = sum(k .* (adj.edge_index(1, :) + 1000 * adj.edge_index(2, :)));
+    assert_true(got_hash == ehash, ['edge order/content differs from Python: ', label]);
+    kk = (1:numel(geo.sub)).';
+    got_g = [sum(geo.time), sum(geo.freq), sum(geo.dt), sum(geo.level), sum(geo.sub), ...
+        sum(geo.tiling), sum(geo.band), sum(geo.logf), sum(kk .* geo.sub)];
+    assert_true(max(abs(got_g - gsum)) < 1e-9, ['geometry differs from Python: ', label]);
+    olen = gaussogram_output_len(n, args{:});
+    A = gaussogram_to_sparse_adjacency(adj, olen);
+    Ad = gaussogram_to_sparse_adjacency(adj, olen, 'types', {'time', 'band', 'dual'});
+    assert_true(nnz(A) == nz && full(sum(A(:))) == asum && full(sum(Ad(:))) == adsum, ...
+        ['sparse adjacency differs from Python: ', label]);
+end
+% Full edge list for the smallest case (Python edge_index + 1, edge_type).
+edges16 = [ ...
+    3, 5, 6, 7, 10, 12, 13, 14, 1, 2, 2, 3, 3, 4, 4, 4, 5, 6, 7, 8, 10, 10, 11, 11, 11, ...
+    2, 2, 3, 4, 3, 3, 4, 4, 4, 5, 6, 7, 8; ...
+    4, 6, 7, 8, 11, 13, 14, 15, 2, 3, 4, 5, 6, 7, 8, 6, 9, 9, 9, 9, 12, 13, 14, 15, 13, ...
+    10, 11, 10, 11, 12, 13, 14, 15, 13, 12, 13, 14, 15];
+types16 = [zeros(1, 8), ones(1, 17), 2 * ones(1, 13)];
+adj = gaussogram_coefficient_adjacency(16);
+assert_true(isequal(adj.edge_index, edges16) && isequal(adj.edge_type, types16), ...
+    'n=16 edge list should match Python exactly');
 end
 
 function t_top_window_options()
