@@ -861,6 +861,12 @@ c_alias = gaussogram(sig, 'nyquist_flat_top', true);
 [~, wid] = lastwarn();
 assert_true(strcmp(wid, 'gaussogram:deprecated'), 'nyquist_flat_top should warn');
 assert_true(isequal(c_alias, c_flat), 'nyquist_flat_top=true should mean flat');
+lastwarn('');
+c_false = gaussogram(sig, 'nyquist_flat_top', false);
+[msg, wid] = lastwarn();
+assert_true(strcmp(wid, 'gaussogram:deprecated') && contains(msg, "'gaussian'"), ...
+    'nyquist_flat_top=false should warn and name the old top window');
+assert_true(isequal(c_false, c_wide), 'nyquist_flat_top=false should give the default');
 eng = Gaussogram1d(n, 'nyquist_flat_top', true);
 assert_true(strcmp(eng.top_window, 'flat') && eng.nyquist_flat_top, 'engine should record flat');
 assert_true(isequal(eng.forward(sig), c_flat), 'flat engine should match the function');
@@ -879,6 +885,11 @@ catch
     threw = true;
 end
 assert_true(threw, 'a non-default top_window should be rejected for dyadic_real');
+% Box windows ignore top_window in the transform, so the rendering must too.
+c_box = gaussogram(sig, 'window', 'box');
+g_box = cellfun(@(t) gaussogram_to_grid(c_box, n, 'window', 'box', 'top_window', t, ...
+    'interp_freq', 'gauss'), {'wide', 'gaussian', 'flat'}, 'UniformOutput', false);
+assert_true(isequal(g_box{1}, g_box{2}, g_box{3}), 'box to_grid should ignore top_window');
 % to_grid accepts the option in every frequency mode.
 for mode = {'block', 'linear', 'gauss'}
     grid = gaussogram_to_grid(c_wide, n, 'top_window', 'wide', 'interp_freq', mode{1});

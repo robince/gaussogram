@@ -34,13 +34,18 @@ def _resolve_top_window(top_window, nyquist_flat_top) -> str:
             raise TypeError("nyquist_flat_top given twice (positionally and by keyword)")
         top_window, nyquist_flat_top = None, bool(top_window)
     if nyquist_flat_top is not None:
+        # False means "no flat top" and so the default, as before; but the
+        # default top window changed, so say how to get the old output.
+        if nyquist_flat_top:
+            msg = "nyquist_flat_top is deprecated; use top_window='flat'"
+        else:
+            msg = (
+                "nyquist_flat_top is deprecated. nyquist_flat_top=False now "
+                "gives the default top_window='wide'; pass top_window='gaussian' "
+                "for the previous output"
+            )
         # Called from a public wrapper, so the user's frame is two up.
-        warnings.warn(
-            "nyquist_flat_top is deprecated; use top_window='flat' (or the "
-            "default top_window='wide')",
-            DeprecationWarning,
-            stacklevel=3,
-        )
+        warnings.warn(msg, DeprecationWarning, stacklevel=3)
         if nyquist_flat_top:
             if top_window not in (None, "flat"):
                 raise ValueError(
@@ -551,7 +556,12 @@ def to_grid(
                 sigma = fc / (2.0 * np.pi)  # freq-domain σ of the band Gaussian
                 # Mirror the forward transform's top window on the dual scheme's
                 # top band (the one ending just below the width-1 Nyquist band).
-                is_top = scheme == "dyadic_dual_real" and lo + w == n // 2
+                # Box windows ignore top_window in the transform, so here too.
+                is_top = (
+                    scheme == "dyadic_dual_real"
+                    and window_type == "gaussian"
+                    and lo + w == n // 2
+                )
                 if is_top and top == "wide":
                     sigma_wide = (w / 2.0) / np.sqrt(2.0 * np.log(1.0 / _TOP_EDGE_GAIN))
                     sigma = max(sigma, sigma_wide)

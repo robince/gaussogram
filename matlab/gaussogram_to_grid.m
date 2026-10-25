@@ -157,7 +157,9 @@ else  % 'gauss': weight each band by its window profile, normalise overlaps
     grid = zeros(nfreq, ntime);
     weight_sum = zeros(nfreq, 1);
     top_edge_gain = 0.63;   % mirrors TOP_EDGE_GAIN in the Rust core
-    is_dual = strcmpi(string(p.Results.scheme), "dyadic_dual_real");
+    % Box windows ignore top_window in the transform, so here too.
+    top_shaped = strcmpi(string(p.Results.scheme), "dyadic_dual_real") && ...
+        strcmpi(string(p.Results.window), "gaussian");
     for b = 1:numel(bands.src_lo)
         lo = bands.src_lo(b);          % 0-based
         w = bands.width(b);
@@ -175,8 +177,8 @@ else  % 'gauss': weight each band by its window profile, normalise overlaps
         else
             sigma = fc / (2.0 * pi);   % freq-domain sigma of the band Gaussian
             % Mirror the forward transform's top window on the dual scheme's
-            % top band (the one ending just below the width-1 Nyquist band).
-            is_top = is_dual && lo + w == n / 2;
+            % Gaussian top band (the one ending just below the width-1 Nyquist band).
+            is_top = top_shaped && lo + w == n / 2;
             if is_top && strcmp(top_window, 'wide')
                 sigma = max(sigma, (w / 2) / sqrt(2 * log(1 / top_edge_gain)));
             end

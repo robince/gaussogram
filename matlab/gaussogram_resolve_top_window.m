@@ -7,8 +7,17 @@ function [name, id] = gaussogram_resolve_top_window(top_window, nyquist_flat_top
 %   2 = gaussian).
 name = char(lower(string(top_window)));
 if ~isempty(nyquist_flat_top)
-    warning('gaussogram:deprecated', ...
-        "'nyquist_flat_top' is deprecated; use 'top_window', 'flat' (or the default 'wide').");
+    % false means "no flat top" and so the default, as before; but the
+    % default top window changed, so say how to get the old output.
+    if logical(nyquist_flat_top)
+        warning('gaussogram:deprecated', ...
+            "'nyquist_flat_top' is deprecated; use 'top_window', 'flat'.");
+    else
+        warning('gaussogram:deprecated', ...
+            "'nyquist_flat_top' is deprecated. 'nyquist_flat_top', false now gives " + ...
+            "the default 'top_window', 'wide'; pass 'top_window', 'gaussian' " + ...
+            "for the previous output.");
+    end
     if logical(nyquist_flat_top)
         if ~isempty(name) && ~strcmp(name, 'flat')
             error('gaussogram:top_window', ...
