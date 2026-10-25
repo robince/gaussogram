@@ -1,7 +1,7 @@
 function coeffs = gaussogram(signal, varargin)
 %GAUSSOGRAM  Forward fast Gaussian S-transform (GFT) of a real signal.
 %   coeffs = GAUSSOGRAM(signal)
-%   coeffs = GAUSSOGRAM(signal, 'scheme', s, 'window', w, 'nyquist_flat_top', tf)
+%   coeffs = GAUSSOGRAM(signal, 'scheme', s, 'window', w, 'top_window', t)
 %
 %   Inputs:
 %     signal - real double vector of length N (a power of two), OR an N x count
@@ -11,7 +11,14 @@ function coeffs = gaussogram(signal, varargin)
 %     'scheme'           - 'dyadic_dual_real' (default, N-1 coeffs),
 %                          'dyadic_real' (invertible, N/2+1 coeffs).
 %     'window'           - 'gaussian' (default) or 'box'.
-%     'nyquist_flat_top' - logical, flatten the top band window (default false).
+%     'top_window'       - shape of the top band of 'dyadic_dual_real' (the
+%                          band just below Nyquist, which no offset band covers):
+%                          'wide' (default) a Gaussian widened so its band-edge
+%                          gain is 0.63, removing the dead zone below Nyquist;
+%                          'gaussian' the plain Gaussian of every other band;
+%                          'flat' the plain Gaussian held at its peak up to
+%                          Nyquist. Other schemes accept only the default.
+%     'nyquist_flat_top' - deprecated alias: true means 'top_window', 'flat'.
 %
 %   Output:
 %     coeffs - complex array, (output_len x count). For a single segment this is
@@ -34,5 +41,5 @@ if ~isa(signal, 'double') || ~isreal(signal) || issparse(signal)
 end
 
 gaussogram_check_built();
-coeffs = gaussogram_mex('forward', signal, scheme_id, window_id, double(opts.nyquist_flat_top));
+coeffs = gaussogram_mex('forward', signal, scheme_id, window_id, opts.top_window_id);
 end

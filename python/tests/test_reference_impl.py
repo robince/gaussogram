@@ -7,7 +7,8 @@ forward coefficients *from the mathematical definition* — the window built
 directly from the spec formula (RUST_PORT_SPEC.md / window.rs docstrings), the
 spectrum and per-band inversions via numpy's FFTs — and requires the native
 output to match to near machine precision, for both real schemes, several
-signal classes, all bands_per_octave values, and both window types.
+signal classes, all bands_per_octave values, both window types, and every
+top window of the dual scheme.
 """
 
 import numpy as np
@@ -43,8 +44,37 @@ def band_screen(n: int, fcentre: int, w: int, window_type: str) -> np.ndarray:
     return f[(k - w // 2) % n]
 
 
+TOP_EDGE_GAIN = 0.63
+
+
+def top_screen(n: int, fcentre: int, w: int, top_window: str) -> np.ndarray:
+    """Gaussian screen of the dual scheme's top band (tiling A's band ending
+    at N/2). ``"wide"``: ``sigma = max(fc / 2 pi, (w/2) / sqrt(2 ln(1/0.63)))``,
+    sampled around the same peak (period-N images included, peak exactly 1);
+    ``"flat"``: the plain screen held at its peak value from the peak up."""
+    plain = band_screen(n, fcentre, w, "gaussian")
+    if top_window == "gaussian":
+        return plain
+    if top_window == "flat":
+        out = plain.copy()
+        out[w // 2 :] = plain[w // 2]
+        return out
+    sigma_default = fcentre / (2.0 * np.pi)
+    sigma_wide = (w / 2.0) / np.sqrt(2.0 * np.log(1.0 / TOP_EDGE_GAIN))
+    if sigma_wide <= sigma_default:
+        return plain
+    d = np.arange(w) - w // 2
+    p = sum(np.exp(-((d + j * n) ** 2) / (2.0 * sigma_wide**2)) for j in (-1, 0, 1))
+    p0 = sum(np.exp(-((j * n) ** 2) / (2.0 * sigma_wide**2)) for j in (-1, 0, 1))
+    return p / p0
+
+
 def reference_forward(
-    x: np.ndarray, scheme: str, window_type: str, bands_per_octave: int
+    x: np.ndarray,
+    scheme: str,
+    window_type: str,
+    bands_per_octave: int,
+    top_window: str = "wide",
 ) -> np.ndarray:
     """Forward GFT from the definition: one rfft, then per band multiply the
     spectrum slice by the screen and inverse-DFT it (numpy ifft carries the
@@ -58,7 +88,12 @@ def reference_forward(
     out = np.zeros(total, dtype=np.complex128)
     for lo, w, fc, off in zip(lay.src_lo, lay.width, lay.fcentre, lay.out_off):
         lo, w, fc, off = int(lo), int(w), int(fc), int(off)
-        windowed = spectrum[lo : lo + w] * band_screen(n, fc, w, window_type)
+        is_top = scheme == "dyadic_dual_real" and lo + w == n // 2
+        if is_top and window_type == "gaussian":
+            screen = top_screen(n, fc, w, top_window)
+        else:
+            screen = band_screen(n, fc, w, window_type)
+        windowed = spectrum[lo : lo + w] * screen
         out[off : off + w] = np.fft.ifft(windowed)
     return out
 
@@ -97,5 +132,26 @@ def test_forward_matches_reference(scheme, window_type, bands_per_octave, n):
         err = np.max(np.abs(got - want))
         assert err < 1e-12, (
             f"{scheme}/{window_type}/bpo={bands_per_octave}/N={n}/{name}: "
+            f"max |native - reference| = {err:.3e}"
+        )
+
+
+@pytest.mark.parametrize("top_window", ["wide", "gaussian", "flat"])
+@pytest.mark.parametrize("bands_per_octave", [1, 2, 4])
+@pytest.mark.parametrize("n", [8, 32, 256, 1024])
+def test_dual_top_window_matches_reference(top_window, bands_per_octave, n):
+    for name, x in signals(n).items():
+        got = g.gft1d_real(
+            np.ascontiguousarray(x),
+            scheme="dyadic_dual_real",
+            top_window=top_window,
+            bands_per_octave=bands_per_octave,
+        )
+        want = reference_forward(
+            x, "dyadic_dual_real", "gaussian", bands_per_octave, top_window
+        )
+        err = np.max(np.abs(got - want))
+        assert err < 1e-12, (
+            f"{top_window}/bpo={bands_per_octave}/N={n}/{name}: "
             f"max |native - reference| = {err:.3e}"
         )

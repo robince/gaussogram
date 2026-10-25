@@ -22,6 +22,45 @@ impl WindowKind {
     }
 }
 
+/// Shape of tiling A's top band window in `dyadic_dual_real` (the band just
+/// below the width-1 Nyquist band). Tiling B has no band centred on Nyquist,
+/// so the upper half of that band is covered by it alone; a plain Gaussian
+/// leaves a dead zone there that sets the frame's condition number.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TopWindow {
+    /// Default. A Gaussian with the usual peak, widened so its gain at the
+    /// band edges is [`TOP_EDGE_GAIN`]; never narrower than the plain one.
+    #[default]
+    Wide,
+    /// The plain Gaussian every other band uses.
+    Gaussian,
+    /// The plain Gaussian, held at its peak value from the peak to Nyquist.
+    Flat,
+}
+
+impl TopWindow {
+    pub fn from_name(name: &str) -> Option<TopWindow> {
+        match name {
+            "wide" => Some(TopWindow::Wide),
+            "gaussian" => Some(TopWindow::Gaussian),
+            "flat" => Some(TopWindow::Flat),
+            _ => None,
+        }
+    }
+}
+
+/// Gain of the wide top-band Gaussian at the band edges, half a band from its
+/// peak. About `sqrt(0.40)`: it lifts the top band's edge to the floor of the
+/// rest of the dual frame (`min sum_b W_b^2 ~ 0.40` at one band per octave).
+pub const TOP_EDGE_GAIN: f64 = 0.63;
+
+/// Standard deviation in bins of the wide top-band Gaussian for a band of
+/// `width` bins: the gain at distance `width/2` from the peak is
+/// [`TOP_EDGE_GAIN`].
+pub fn wide_top_sigma(width: usize) -> f64 {
+    (width as f64 / 2.0) / (2.0 * (1.0 / TOP_EDGE_GAIN).ln()).sqrt()
+}
+
 const SQRT_2PI: f64 = 2.506_628_274_631_000_7; // sqrt(2*PI)
 
 /// `exp(x)` is exactly `0.0` in f64 for `x` below about -745.13; samples whose
@@ -156,19 +195,7 @@ impl GaussianScreens {
             // summation); the unit-sum normalisation makes F[0] = 1. Only the
             // nearest period images can matter (|m| <= N/2), so sum k = -1..=1.
             let alpha = 2.0 * std::f64::consts::PI.powi(2) / (fc * fc);
-            let nf = n as f64;
-            let periodised = |m: f64| -> f64 {
-                (-1..=1)
-                    .map(|k| {
-                        let d = m + k as f64 * nf;
-                        (-alpha * d * d).exp()
-                    })
-                    .sum()
-            };
-            let p0 = periodised(0.0);
-            return (0..width)
-                .map(|k| periodised(k as f64 - shift as f64) / p0)
-                .collect();
+            return periodised_screen(n, alpha, width);
         }
         let f = self.freq_gaussian(fcentre);
         (0..width)
@@ -187,6 +214,37 @@ impl GaussianScreens {
         }
         self.band(fcentre, width)
     }
+}
+
+/// `screen[k] = P(k - width/2) / P(0)`, `k = 0..width`, where
+/// `P(m) = sum_{j=-1..=1} exp(-alpha (m + jN)^2)` is the Gaussian
+/// `exp(-alpha m^2)` periodised with period `n`. Peak value exactly 1.
+fn periodised_screen(n: usize, alpha: f64, width: usize) -> Vec<f64> {
+    let shift = width / 2;
+    let nf = n as f64;
+    let periodised = |m: f64| -> f64 {
+        (-1..=1)
+            .map(|k| {
+                let d = m + k as f64 * nf;
+                (-alpha * d * d).exp()
+            })
+            .sum()
+    };
+    let p0 = periodised(0.0);
+    (0..width)
+        .map(|k| periodised(k as f64 - shift as f64) / p0)
+        .collect()
+}
+
+/// Gaussian screen with an explicit standard deviation `sigma` (in bins) for a
+/// band of `width` bins, peak at local index `width/2`. The plain band screen
+/// of [`gaussian_band_screen`] is this with `sigma = fcentre / (2 pi)` (for
+/// `fcentre >= 24`, up to rounding).
+pub fn gaussian_sigma_screen(n: usize, sigma: f64, width: usize) -> Vec<f64> {
+    if width == 1 {
+        return vec![1.0];
+    }
+    periodised_screen(n, 1.0 / (2.0 * sigma * sigma), width)
 }
 
 /// Window screen for a single positive band `[lo, lo+width)` with the given

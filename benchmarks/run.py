@@ -27,13 +27,13 @@ def cases(sizes, methods, full=False):
             settings = [{}]
             if method in ('gaussogram', 'grid'):
                 settings = [dict(scheme=s, bands_per_octave=b, window_type=w,
-                                 nyquist_flat_top=f)
-                            for s, b, w, f in itertools.product(
+                                 top_window=t)
+                            for s, b, w, t in itertools.product(
                                 ('dyadic_real', 'dyadic_dual_real'),
                                 (1, 2, 4, 8, 16) if full else (1, 4),
                                 ('gaussian', 'box') if full else ('gaussian',),
-                                (False, True) if full else (False,))
-                            if not f or s == 'dyadic_dual_real']
+                                ('wide', 'gaussian', 'flat') if full else ('wide',))
+                            if t == 'wide' or (s == 'dyadic_dual_real' and w == 'gaussian')]
             elif method == 'dwt':
                 settings = [dict(wavelet=w) for w in ('haar', 'sym8')]
             elif method in ('cwt', 'nsgt', 'ssq_cwt'):

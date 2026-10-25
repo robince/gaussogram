@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use gaussogram_core::{
     cached_engine, clear_engine_cache as core_clear_engine_cache, complex_partitions as core_complex_partitions, legacy_real_partitions,
-    Gaussogram1d as CoreEngine, GaussogramError, SchemeKind, SchemeSpec, Scratch, WindowKind,
+    Gaussogram1d as CoreEngine, GaussogramError, SchemeKind, SchemeSpec, Scratch, TopWindow, WindowKind,
 };
 
 fn map_err(e: GaussogramError) -> PyErr {
@@ -48,6 +48,14 @@ fn window_kind(name: &str) -> PyResult<WindowKind> {
     })
 }
 
+fn top_window(name: &str) -> PyResult<TopWindow> {
+    TopWindow::from_name(name).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "top_window must be 'wide', 'gaussian' or 'flat' (got '{name}')"
+        ))
+    })
+}
+
 /// Shared (cached) engine for the named scheme. Building windows and FFT plans
 /// is far more expensive than a transform, so the free functions and handles
 /// reuse engines from the core's process-wide cache.
@@ -55,25 +63,27 @@ fn build_engine(
     scheme: &str,
     n: usize,
     window: WindowKind,
-    nyquist_flat_top: bool,
+    top_window_name: &str,
     bands_per_octave: usize,
 ) -> PyResult<Arc<CoreEngine>> {
+    let top = top_window(top_window_name)?;
+    let custom_top = top != TopWindow::default();
     // Reject non-default options a scheme does not support rather than
     // silently ignoring them (a reproducibility hazard).
     let kind = match scheme {
         "dyadic_dual_real" => SchemeKind::DyadicDualReal,
         "dyadic_real" => {
-            if nyquist_flat_top {
+            if custom_top {
                 return Err(PyValueError::new_err(
-                    "nyquist_flat_top is only supported by 'dyadic_dual_real'",
+                    "top_window is only supported by 'dyadic_dual_real'",
                 ));
             }
             SchemeKind::DyadicReal
         }
         "dyadic_complex" => {
-            if nyquist_flat_top || bands_per_octave != 1 {
+            if custom_top || bands_per_octave != 1 {
                 return Err(PyValueError::new_err(
-                    "'dyadic_complex' supports neither nyquist_flat_top nor bands_per_octave",
+                    "'dyadic_complex' supports neither top_window nor bands_per_octave",
                 ));
             }
             SchemeKind::DyadicComplex
@@ -88,7 +98,7 @@ fn build_engine(
         kind,
         n,
         window,
-        nyquist_flat_top,
+        top_window: top,
         bands_per_octave,
     })
     .map_err(map_err)
@@ -161,19 +171,19 @@ impl Drop for WriteableGuard {
 /// scratch and output are allocated per call. For repeated transforms of the
 /// same size/scheme, construct a `Gaussogram1d` once and reuse it.
 #[pyfunction]
-#[pyo3(signature = (x, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false, bands_per_octave=1))]
+#[pyo3(signature = (x, scheme="dyadic_dual_real", window_type="gaussian", top_window="wide", bands_per_octave=1))]
 fn gft1d_real<'py>(
     py: Python<'py>,
     x: PyReadonlyArray1<'py, f64>,
     scheme: &str,
     window_type: &str,
-    nyquist_flat_top: bool,
+    top_window: &str,
     bands_per_octave: usize,
 ) -> PyResult<Bound<'py, PyArray1<Complex<f64>>>> {
     let kind = window_kind(window_type)?;
     let signal = x.as_slice()?;
     let n = signal.len();
-    let engine = build_engine(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
+    let engine = build_engine(scheme, n, kind, top_window, bands_per_octave)?;
     if engine.scheme().complex_input {
         return Err(PyValueError::new_err(
             "gft1d_real requires a real-input scheme; use gft1d for dyadic_complex",
@@ -199,7 +209,7 @@ fn gft1d<'py>(
     let kind = window_kind(window_type)?;
     let signal = z.as_slice()?;
     let n = signal.len();
-    let engine = build_engine("dyadic_complex", n, kind, false, 1)?;
+    let engine = build_engine("dyadic_complex", n, kind, "wide", 1)?;
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![Complex::new(0.0, 0.0); engine.output_len()];
     engine.load_complex(signal, &mut scratch).map_err(map_err)?;
@@ -212,16 +222,16 @@ fn gft1d<'py>(
 /// N/2+1), least-squares frame inverse for `dyadic_dual_real` (length N-1).
 /// `scheme=None` infers the scheme from the length (the two families of
 /// lengths, 2^k+1 and 2^k-1, never coincide for valid N). `bands_per_octave`
-/// and `nyquist_flat_top` must match the values used for the forward transform.
+/// and `top_window` must match the values used for the forward transform.
 #[pyfunction]
-#[pyo3(signature = (coeffs, window_type="gaussian", bands_per_octave=1, scheme=None, nyquist_flat_top=false))]
+#[pyo3(signature = (coeffs, window_type="gaussian", bands_per_octave=1, scheme=None, top_window="wide"))]
 fn inverse_real<'py>(
     py: Python<'py>,
     coeffs: PyReadonlyArray1<'py, Complex<f64>>,
     window_type: &str,
     bands_per_octave: usize,
     scheme: Option<&str>,
-    nyquist_flat_top: bool,
+    top_window: &str,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let kind = window_kind(window_type)?;
     let c = coeffs.as_slice()?;
@@ -249,7 +259,7 @@ fn inverse_real<'py>(
         "dyadic_complex" => return Err(map_err(GaussogramError::NotInvertible("dyadic_complex"))),
         _ => 0, // build_engine reports the unknown scheme
     };
-    let engine = build_engine(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
+    let engine = build_engine(scheme, n, kind, top_window, bands_per_octave)?;
     let mut scratch = engine.alloc_scratch();
     let mut out = vec![0.0f64; n];
     engine.load_coeffs(c, &mut scratch).map_err(map_err)?;
@@ -264,7 +274,7 @@ fn inverse_real<'py>(
 ///
 /// An instance owns mutable scratch, so a single instance is **not** safe to
 /// call concurrently from multiple Python threads — create one per thread.
-#[pyclass(name = "Gaussogram1d", module = "gaussogram._native")]
+#[pyclass(subclass, name = "Gaussogram1d", module = "gaussogram._native")]
 struct PyGaussogram {
     engine: Arc<CoreEngine>,
     scratch: Scratch,
@@ -277,16 +287,16 @@ struct PyGaussogram {
 #[pymethods]
 impl PyGaussogram {
     #[new]
-    #[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false, bands_per_octave=1))]
+    #[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", top_window="wide", bands_per_octave=1))]
     fn new(
         n: usize,
         scheme: &str,
         window_type: &str,
-        nyquist_flat_top: bool,
+        top_window: &str,
         bands_per_octave: usize,
     ) -> PyResult<Self> {
         let kind = window_kind(window_type)?;
-        let engine = build_engine(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
+        let engine = build_engine(scheme, n, kind, top_window, bands_per_octave)?;
         let complex_input = engine.scheme().complex_input;
         let invertible = engine.scheme().invertible;
         let output_len = engine.output_len();
@@ -477,13 +487,13 @@ fn real_partitions<'py>(py: Python<'py>, n: usize) -> PyResult<Bound<'py, PyArra
 /// Band layout of a scheme: parallel arrays (src_lo, width, fcentre, out_off).
 /// Used by Python helpers to map packed coefficients onto a frequency-time grid.
 #[pyfunction]
-#[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false, bands_per_octave=1))]
+#[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", top_window="wide", bands_per_octave=1))]
 fn scheme_bands<'py>(
     py: Python<'py>,
     n: usize,
     scheme: &str,
     window_type: &str,
-    nyquist_flat_top: bool,
+    top_window: &str,
     bands_per_octave: usize,
 ) -> PyResult<(
     Bound<'py, PyArray1<i64>>,
@@ -492,7 +502,7 @@ fn scheme_bands<'py>(
     Bound<'py, PyArray1<i64>>,
 )> {
     let kind = window_kind(window_type)?;
-    let engine = build_engine(scheme, n, kind, nyquist_flat_top, bands_per_octave)?;
+    let engine = build_engine(scheme, n, kind, top_window, bands_per_octave)?;
     let s = engine.scheme();
     let mut lo = Vec::with_capacity(s.bands.len());
     let mut width = Vec::with_capacity(s.bands.len());
@@ -514,16 +524,16 @@ fn scheme_bands<'py>(
 
 /// Packed output length for a scheme.
 #[pyfunction]
-#[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", nyquist_flat_top=false, bands_per_octave=1))]
+#[pyo3(signature = (n, scheme="dyadic_dual_real", window_type="gaussian", top_window="wide", bands_per_octave=1))]
 fn output_len(
     n: usize,
     scheme: &str,
     window_type: &str,
-    nyquist_flat_top: bool,
+    top_window: &str,
     bands_per_octave: usize,
 ) -> PyResult<usize> {
     let kind = window_kind(window_type)?;
-    Ok(build_engine(scheme, n, kind, nyquist_flat_top, bands_per_octave)?.output_len())
+    Ok(build_engine(scheme, n, kind, top_window, bands_per_octave)?.output_len())
 }
 
 /// Drop the process-wide engine cache, so the next construction is cold.

@@ -50,7 +50,7 @@ const char* status_message(int32_t status) {
         case GAUSSOGRAM_STATUS_UNKNOWN_SCHEME:
             return "unknown scheme id";
         case GAUSSOGRAM_STATUS_UNSUPPORTED_OPTION:
-            return "option not supported by this scheme (nyquist_flat_top needs dyadic_dual_real)";
+            return "unknown top_window id, or a non-default top_window on a scheme other than dyadic_dual_real";
         case GAUSSOGRAM_STATUS_INTERNAL:
             return "internal error";
         default:
@@ -110,9 +110,9 @@ struct Handle {
     }
 };
 
-GaussogramHandle* make_handle(int32_t scheme_id, size_t n, int32_t window_id, int32_t nyquist) {
+GaussogramHandle* make_handle(int32_t scheme_id, size_t n, int32_t window_id, int32_t top_window) {
     GaussogramHandle* h = nullptr;
-    int32_t st = gaussogram_create(scheme_id, n, window_id, nyquist, &h);
+    int32_t st = gaussogram_create(scheme_id, n, window_id, top_window, &h);
     if (st != GAUSSOGRAM_STATUS_OK || h == nullptr) {
         mexErrMsgIdAndTxt(
             "gaussogram:create",
@@ -200,7 +200,7 @@ GaussogramHandle* read_handle(const mxArray* arg) {
 // each column is a segment). Returns complex (output_len x count).
 void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 5, "gaussogram:nrhs",
-            "forward expects (op, signal, scheme_id, window_id, nyquist_flat_top).");
+            "forward expects (op, signal, scheme_id, window_id, top_window_id).");
     const mxArray* sig_in = prhs[1];
     require_real_double(sig_in, "gaussogram:sigType", "signal");
     size_t n, count;
@@ -208,10 +208,10 @@ void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
-    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    int32_t top_window = scalar_int(prhs[4], "gaussogram:top_window", "top_window_id");
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist);
+    h.ptr = make_handle(scheme_id, n, window_id, top_window);
     plhs[0] = forward_into_output(h.ptr, sig_in, &h);
     (void)nlhs;
 }
@@ -221,13 +221,13 @@ void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 // resident so live handles are not orphaned by `clear`. Pair with 'destroy'.
 void op_create(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 5, "gaussogram:nrhs",
-            "create expects (op, n, scheme_id, window_id, nyquist_flat_top).");
+            "create expects (op, n, scheme_id, window_id, top_window_id).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
-    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    int32_t top_window = scalar_int(prhs[4], "gaussogram:top_window", "top_window_id");
 
-    GaussogramHandle* h = make_handle(scheme_id, n, window_id, nyquist);
+    GaussogramHandle* h = make_handle(scheme_id, n, window_id, top_window);
     uint64_t id = next_handle_id();
     live_handles().emplace(id, h);
     mexLock();
@@ -265,33 +265,33 @@ void op_destroy(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     (void)plhs;
 }
 
-// op = 'output_len': (op, n, scheme_id, window_id, nyquist) -> scalar double.
+// op = 'output_len': (op, n, scheme_id, window_id, top_window_id) -> scalar double.
 void op_output_len(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 5, "gaussogram:nrhs",
-            "output_len expects (op, n, scheme_id, window_id, nyquist_flat_top).");
+            "output_len expects (op, n, scheme_id, window_id, top_window_id).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
-    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    int32_t top_window = scalar_int(prhs[4], "gaussogram:top_window", "top_window_id");
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist);
+    h.ptr = make_handle(scheme_id, n, window_id, top_window);
     plhs[0] = mxCreateDoubleScalar(static_cast<double>(gaussogram_output_len(h.ptr)));
     (void)nlhs;
 }
 
-// op = 'scheme_bands': (op, n, scheme_id, window_id, nyquist)
+// op = 'scheme_bands': (op, n, scheme_id, window_id, top_window_id)
 // -> double matrix (num_bands x 4): columns [src_lo, width, fcentre, out_off].
 void op_scheme_bands(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 5, "gaussogram:nrhs",
-            "scheme_bands expects (op, n, scheme_id, window_id, nyquist_flat_top).");
+            "scheme_bands expects (op, n, scheme_id, window_id, top_window_id).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
-    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    int32_t top_window = scalar_int(prhs[4], "gaussogram:top_window", "top_window_id");
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist);
+    h.ptr = make_handle(scheme_id, n, window_id, top_window);
     int32_t nb = gaussogram_num_bands(h.ptr);
     if (nb <= 0) {
         h.reset();

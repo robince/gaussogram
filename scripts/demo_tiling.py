@@ -136,7 +136,7 @@ plt.show()
 # keeps whichever magnitude is larger per cell (`np.maximum`).
 
 # %%
-layout_dual = g.scheme_bands(N, scheme="dyadic_dual_real", nyquist_flat_top=True)
+layout_dual = g.scheme_bands(N, scheme="dyadic_dual_real")
 # Split A (first N/2+1 coeffs) from B by out_off, matching to_grid / band_energy.
 a_len = NFREQ
 a_mask = layout_dual.out_off < a_len
@@ -182,9 +182,8 @@ plt.show()
 JOIN = 16  # an A octave boundary (dead zone) that a B band is centred on
 t = np.arange(N)
 sig = np.ascontiguousarray(np.cos(2 * np.pi * JOIN * t / N))
-coeffs = g.gft1d_real(sig, scheme="dyadic_dual_real", nyquist_flat_top=True)
-grid = g.to_grid(coeffs, N, scheme="dyadic_dual_real",
-                 nyquist_flat_top=True, interp="linear", normalize="width")
+coeffs = g.gft1d_real(sig, scheme="dyadic_dual_real")
+grid = g.to_grid(coeffs, N, scheme="dyadic_dual_real", interp="linear", normalize="width")
 
 fig, (axL, axR) = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
 

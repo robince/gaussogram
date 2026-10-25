@@ -19,14 +19,16 @@
 #   every join, so the response is bounded away from zero at every frequency,
 #   at every `bands_per_octave`.
 #
-# Two expected edge effects, neither a dead zone: the response rolls off at
-# the very last bins before Nyquist (the spectrum *endpoint*, not an interior
-# join — B has no band there by design; `nyquist_flat_top=True` flattens the
-# top band's taper if that matters), and the lowest bins are exact
-# (width-1/width-2 bands barely taper).
+# Near Nyquist, B has no band (it would need bins above N/2), so the upper half
+# of A's top band is covered by that band alone. The dual scheme's default
+# `top_window="wide"` widens that band's Gaussian so the response there stays
+# at about 0.63 or higher instead of rolling off to ~0.11 as the plain Gaussian
+# (`top_window="gaussian"`, drawn dashed at bands_per_octave = 1) does. The
+# lowest bins are exact (width-1/width-2 bands barely taper).
 #
-# Writes `reports/figures/dead_zone_sweep.png` and prints a join/centre table.
-# Build the extension first: `maturin develop --release`.
+# Writes `reports/figures/dead_zone_sweep.png` and prints a join/centre table
+# and the response at the last bin before Nyquist.
+# Build the extension first: `uv sync --all-extras --reinstall-package gaussogram`.
 
 # %%
 import os
@@ -46,15 +48,18 @@ os.makedirs(OUTDIR, exist_ok=True)
 
 
 # %% response sweep
-def best_band_response(scheme: str, bands_per_octave: int) -> np.ndarray:
+def best_band_response(
+    scheme: str, bands_per_octave: int, top_window: str | None = None
+) -> np.ndarray:
     """Peak width-scaled coefficient magnitude per integer tone frequency.
 
     Returns ``resp[f]`` for ``f = 1 .. N/2 - 1``: the max over bands of
     ``w * max_j |c_band[j]|``, normalised by the spike magnitude ``N/2`` so a
     tone exactly on a band peak scores ~1 (its window gain).
     """
-    lay = g.scheme_bands(N, scheme=scheme, bands_per_octave=bands_per_octave)
-    h = g.Gaussogram1d(N, scheme=scheme, bands_per_octave=bands_per_octave)
+    kw = dict(scheme=scheme, bands_per_octave=bands_per_octave, top_window=top_window)
+    lay = g.scheme_bands(N, **kw)
+    h = g.Gaussogram1d(N, **kw)
     freqs = np.arange(1, N // 2)
     resp = np.zeros(len(freqs))
     for i, f in enumerate(freqs):
@@ -75,6 +80,7 @@ sweeps = {
     ("dyadic_real", 2): best_band_response("dyadic_real", 2),
     ("dyadic_dual_real", 2): best_band_response("dyadic_dual_real", 2),
 }
+plain_top = best_band_response("dyadic_dual_real", 1, top_window="gaussian")
 
 # %% figure
 joins = [2 ** k for k in range(1, int(np.log2(N)) - 1)]  # 2 .. N/4
@@ -88,6 +94,11 @@ for ax, bpo in zip(axes, (1, 2)):
         freqs, sweeps[("dyadic_dual_real", bpo)],
         color="tab:blue", lw=1.4, label="dyadic_dual_real (dual tiling)",
     )
+    if bpo == 1:
+        ax.semilogx(
+            freqs, plain_top, color="tab:blue", lw=1.0, ls="--", alpha=0.7,
+            label='dyadic_dual_real, top_window="gaussian"',
+        )
     for j in joins:
         ax.axvline(j, color="0.8", lw=0.6, zorder=0)
     ax.set_yscale("log")
@@ -120,4 +131,8 @@ for j in joins:
 print(
     f"\nworst join/centre ratio: single cover {worst_single:.4f}, "
     f"dual tiling {worst_dual:.4f}"
+)
+print(
+    f"last bin before Nyquist (f = {N // 2 - 1}, bpo = 1): dual {dual[-1]:.4f}, "
+    f'dual with top_window="gaussian" {plain_top[-1]:.4f}'
 )

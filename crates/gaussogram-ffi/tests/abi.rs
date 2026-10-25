@@ -3,7 +3,10 @@
 
 use std::ptr;
 
-use gaussogram_core::{build, dyadic_dual_real, dyadic_real, STATUS_OK};
+use gaussogram_core::{
+    build, dyadic_dual_real, dyadic_dual_real_with, dyadic_real, TopWindow, WindowKind, STATUS_OK,
+    STATUS_UNSUPPORTED_OPTION,
+};
 use gaussogram_ffi::*;
 use num_complex::Complex;
 
@@ -79,4 +82,40 @@ fn partitions_report_status_for_invalid_n() {
         unsafe { gaussogram_complex_partitions(8, ptr::null_mut(), 64) },
         -STATUS_OUTPUT_LEN_MISMATCH
     );
+}
+
+#[test]
+fn top_window_ids_build_the_expected_schemes() {
+    let n = 256;
+    // Equal schemes give equal transforms of an impulse.
+    let impulse_forward = |h: *mut GaussogramHandle| {
+        let mut x = vec![0.0f64; n];
+        x[3] = 1.0;
+        let olen = unsafe { gaussogram_output_len(h) };
+        let mut out = vec![0.0f64; 2 * olen];
+        let st = unsafe { gaussogram_forward_real(h, x.as_ptr(), n, out.as_mut_ptr(), olen) };
+        assert_eq!(st, STATUS_OK);
+        (x, out)
+    };
+    for (id, top) in [(0, TopWindow::Wide), (1, TopWindow::Flat), (2, TopWindow::Gaussian)] {
+        let engine = build(dyadic_dual_real_with(n, WindowKind::Gaussian, top, 1).unwrap());
+        let mut h: *mut GaussogramHandle = ptr::null_mut();
+        assert_eq!(unsafe { gaussogram_create(0, n, 0, id, &mut h) }, STATUS_OK);
+        let (x, out) = impulse_forward(h);
+        let mut expected = vec![Complex::new(0.0, 0.0); engine.output_len()];
+        engine.forward(&x, &mut expected).unwrap();
+        for (k, e) in expected.iter().enumerate() {
+            assert_eq!((out[2 * k], out[2 * k + 1]), (e.re, e.im), "id={id}");
+        }
+        unsafe { gaussogram_destroy(h) };
+    }
+    let mut h: *mut GaussogramHandle = ptr::null_mut();
+    // Unknown id, and a non-default id on a scheme without the option.
+    assert_eq!(unsafe { gaussogram_create(0, n, 0, 3, &mut h) }, STATUS_UNSUPPORTED_OPTION);
+    assert_eq!(unsafe { gaussogram_create(0, n, 0, -1, &mut h) }, STATUS_UNSUPPORTED_OPTION);
+    for id in [1, 2] {
+        assert_eq!(unsafe { gaussogram_create(1, n, 0, id, &mut h) }, STATUS_UNSUPPORTED_OPTION);
+    }
+    assert_eq!(unsafe { gaussogram_create(1, n, 0, 0, &mut h) }, STATUS_OK);
+    unsafe { gaussogram_destroy(h) };
 }

@@ -303,15 +303,39 @@ slice). We must decide deliberately whether to keep that, and the two schemes di
   inverse expects; do not perturb it. Document Nyquist-adjacent attenuation in the top band
   as a known, intended property of this scheme.
 
-- **`dyadic_dual_real` (lossy feature scheme): optional flat-top at Nyquist**, controlled by
-  an explicit `nyquist_flat_top: bool` field on the top `Window` (default **off**: the plain
-  Gaussian screen, as for `dyadic_real`). When on, construct the top band's frequency-domain window normally, then for
-  every bin from the band **centre** `fcentre` up to the band's top bin `N/2 − 1`, set the
-  window value to its peak (the value at `fcentre`, which is the max after the unit-sum
-  normalization). Concretely, for band `[lo, N/2)` with screen `w[0..width]` indexed so that
-  `w[fcentre-lo]` is the peak: `for i in (fcentre-lo)..width { w[i] = w[fcentre-lo]; }`. This
-  makes the upper half-window flat so Nyquist-adjacent content is not attenuated, at the
-  cost of (intended) non-invertibility for this scheme. Pin the exact values with a test.
+- **`dyadic_dual_real`: a `TopWindow` choice for tiling A's top band**, default
+  **`Wide`**. This scheme is gaussogram's own and not bound to C parity. Tiling B has a
+  band centred on every interior octave join but none on Nyquist (it would need bins above
+  `N/2`), so the upper half of A's top band (width `w = N/(4·bpo)`, peak at local index
+  `w/2`, `fcentre = lo + w/2`) is covered by that band alone. With the plain Gaussian it
+  falls to a gain of about 0.11 at bin `N/2 − 1`, a dead zone that sets the whole frame's
+  condition number (`max D / min D` with `D[k] = Σ_b W_b[k]²`: about 84 at `N = 1024`,
+  `bpo = 1`). The option is recorded as `top_window: Option<TopWindow>` on the `Window`
+  (`Some` only on this band; box windows ignore it):
+  - **`Wide` (default):** the same peak, with standard deviation (in bins)
+    `σ = max(σ_default, σ_wide)`, where `σ_default = fcentre / (2π)` is the plain band's
+    and `σ_wide = (w/2) / sqrt(2 ln(1 / TOP_EDGE_GAIN))` with `TOP_EDGE_GAIN = 0.63`, so
+    the gain at the band's lower edge (distance `w/2` from the peak) is 0.63, about
+    `sqrt(0.40)`, the floor of the rest of the frame. Screen:
+    `W[m] = P(m − w/2) / P(0)`, `P(d) = Σ_{j=−1..1} exp(−(d + jN)² / (2σ²))`, `m = 0..w−1`
+    (the closed form of §3.1 with σ replaced, so the peak is exactly 1). If
+    `σ_wide <= σ_default` the plain screen is kept bit for bit; this holds for every
+    `bpo >= 2`, so the option only changes `bpo = 1` (factor `σ_wide/σ_default ≈ 2.18`).
+    At `N = 1024`, `bpo = 1`: `min D ≈ 0.403`, condition number ≈ 3.5. The window is
+    symmetric about its peak, so it has the same height at both edges and no step where
+    the band's FFT wraps round: the top band's time response barely rings, and the window
+    stays in the Gaussian family.
+  - **`Gaussian`:** the plain screen of §3.1, as for `dyadic_real` (the default before
+    `TopWindow` existed; the real-scheme golden vectors are pinned with it).
+  - **`Flat`:** construct the plain screen, then hold every bin from the peak up to
+    `N/2 − 1` at the peak value:
+    `for i in (fcentre-lo)..width { w[i] = w[fcentre-lo]; }`. This conditions the frame
+    too (condition number ≈ 2.8) but steps from 1.0 at the band edge to ≈ 0.11 where the
+    band's FFT wraps round, so the top band's time response rings.
+
+  All three are exactly invertible by the least-squares frame inverse, which derives its
+  dual screens from `scheme.windows`. The C ABI takes the choice as an `int`:
+  `0 = Wide` (default), `1 = Flat` (the former `nyquist_flat_top = 1`), `2 = Gaussian`.
 
 Represent the choice with the explicit `Window` field rather than special-casing inside the
 FFT loop. The DC and Nyquist bands (width 1) are exact and need no taper regardless.
@@ -364,10 +388,12 @@ impl Band { pub fn width(&self) -> usize { self.src_hi - self.src_lo } }
 
 pub enum WindowKind { Gaussian, Box }
 
+pub enum TopWindow { Wide /* default */, Gaussian, Flat }   // §3.2
+
 pub struct Window {
     pub kind: WindowKind,
     pub fcentre: usize,
-    pub nyquist_flat_top: bool,   // §3.2; default false (matches C)
+    pub top_window: Option<TopWindow>,   // §3.2; Some only on dyadic_dual_real's top A band
     // precomputed frequency-domain taper for THIS band, length = band width.
     // Applied per band against a COPY of the source slice (NOT a single global screen),
     // because A and B overlap in source bins with different windows. See §5.
@@ -493,7 +519,7 @@ For each input segment of length `N`:
    complex FFT over `0..N`. This spectrum is the **shared, read-only source** for every band.
 2. **Per-band: window → IFFT, in the output.** For each `Band { src_lo, src_hi, out_off }`:
    - write `spectrum[src_lo..src_hi]` multiplied element-wise by **that band's own**
-     `window.screen` (applying the Nyquist flat-top of §3.2 if set) and by the `1/width`
+     `window.screen` (already shaped by the top window of §3.2) and by the `1/width`
      IFFT normalisation into `out[out_off .. out_off + width]`;
    - run the cached length-`width` inverse FFT in place there.
 3. Output is the concatenation of all bands (tiling A then B for `dyadic_dual_real`).

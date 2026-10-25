@@ -2,7 +2,7 @@ function grid = gaussogram_to_grid(coeffs, n, varargin)
 %GAUSSOGRAM_TO_GRID  Render packed GFT coefficients as a time-frequency image.
 %   grid = GAUSSOGRAM_TO_GRID(coeffs, n)
 %   grid = GAUSSOGRAM_TO_GRID(coeffs, n, 'scheme', s, 'window', w, ...
-%                             'nyquist_flat_top', tf, 'interp', i, ...
+%                             'top_window', t, 'interp', i, ...
 %                             'interp_freq', f, 'smooth', sg, ...
 %                             'n_freq', nf, 'n_time', nt)
 %
@@ -14,7 +14,8 @@ function grid = gaussogram_to_grid(coeffs, n, varargin)
 %   positive half-spectrum, so 'dyadic_complex' is rejected. coeffs must be a
 %   vector of exactly the scheme's packed length.
 %
-%   Options (in addition to the shared scheme/window/nyquist_flat_top):
+%   Options (in addition to the shared scheme/window/top_window, and the
+%   deprecated 'nyquist_flat_top' alias):
 %     'interp'      - 'linear' (default) piecewise-linear time resampling, or
 %                     'nearest' block/step sampling (raw coefficient cells).
 %     'interp_freq' - 'block' (default) flat-fills each band's resampled row
@@ -25,7 +26,8 @@ function grid = gaussogram_to_grid(coeffs, n, varargin)
 %                     'gauss' weights each band's row by its Gaussian window
 %                     across frequency and normalises across overlapping bands
 %                     (partition of unity) - confines each band to its
-%                     effective bandwidth (best for dyadic_dual_real).
+%                     effective bandwidth (best for dyadic_dual_real). The
+%                     dual scheme's top band follows 'top_window'.
 %     'normalize'   - 'none' (default) raw |coeff|; 'width' multiplies each
 %                     band by its width (L1, equal-amplitude tones equally
 %                     bright); 'energy' multiplies by sqrt(width) (L2).
@@ -48,7 +50,8 @@ p = inputParser;
 p.FunctionName = 'gaussogram_to_grid';
 addParameter(p, 'scheme', 'dyadic_dual_real', @(s) ischar(s) || isstring(s));
 addParameter(p, 'window', 'gaussian', @(s) ischar(s) || isstring(s));
-addParameter(p, 'nyquist_flat_top', false, @(t) isscalar(t) && (islogical(t) || isnumeric(t)));
+addParameter(p, 'top_window', '', @(s) ischar(s) || isstring(s));
+addParameter(p, 'nyquist_flat_top', [], @(t) isempty(t) || (isscalar(t) && (islogical(t) || isnumeric(t))));
 addParameter(p, 'interp', 'linear', @(s) ischar(s) || isstring(s));
 addParameter(p, 'interp_freq', 'block', @(s) ischar(s) || isstring(s));
 addParameter(p, 'normalize', 'none', @(s) ischar(s) || isstring(s));
@@ -56,6 +59,7 @@ addParameter(p, 'smooth', [], @(s) isempty(s) || (isnumeric(s) && (isscalar(s) |
 addParameter(p, 'n_freq', [], @(v) isempty(v) || (isnumeric(v) && isscalar(v)));
 addParameter(p, 'n_time', [], @(v) isempty(v) || (isnumeric(v) && isscalar(v)));
 parse(p, varargin{:});
+top_window = gaussogram_resolve_top_window(p.Results.top_window, p.Results.nyquist_flat_top);
 
 interp = char(lower(string(p.Results.interp)));
 if ~ismember(interp, {'linear', 'nearest'})
@@ -81,7 +85,7 @@ end
 
 bands = gaussogram_scheme_bands(n, ...
     'scheme', p.Results.scheme, 'window', p.Results.window, ...
-    'nyquist_flat_top', p.Results.nyquist_flat_top);
+    'top_window', top_window);
 expected = max(bands.out_off + bands.width);
 if ~isvector(coeffs) || numel(coeffs) ~= expected
     error('gaussogram:coeffsLen', ...
@@ -149,7 +153,8 @@ elseif strcmp(interp_freq, 'linear')  % anchor each band at its centre, interpol
 else  % 'gauss': weight each band by its window profile, normalise overlaps
     grid = zeros(nfreq, ntime);
     weight_sum = zeros(nfreq, 1);
-    nyquist = logical(p.Results.nyquist_flat_top);
+    top_edge_gain = 0.63;   % mirrors TOP_EDGE_GAIN in the Rust core
+    is_dual = strcmpi(string(p.Results.scheme), "dyadic_dual_real");
     for b = 1:numel(bands.src_lo)
         lo = bands.src_lo(b);          % 0-based
         w = bands.width(b);
@@ -166,10 +171,14 @@ else  % 'gauss': weight each band by its window profile, normalise overlaps
             wj = ones(numel(f), 1);
         else
             sigma = fc / (2.0 * pi);   % freq-domain sigma of the band Gaussian
+            % Mirror the forward transform's top window on the dual scheme's
+            % top band (the one ending just below the width-1 Nyquist band).
+            is_top = is_dual && lo + w == n / 2;
+            if is_top && strcmp(top_window, 'wide')
+                sigma = max(sigma, (w / 2) / sqrt(2 * log(1 / top_edge_gain)));
+            end
             wj = exp(-((f - fc).^2) / (2.0 * sigma^2));
-            % Mirror the forward transform's Nyquist flat-top on the top band
-            % (the one ending just below the width-1 Nyquist band).
-            if nyquist && lo + w >= n / 2
+            if is_top && strcmp(top_window, 'flat')
                 wj(f >= fc) = 1.0;
             end
         end

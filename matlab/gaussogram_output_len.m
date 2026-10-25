@@ -1,7 +1,7 @@
 function olen = gaussogram_output_len(n, varargin)
 %GAUSSOGRAM_OUTPUT_LEN  Packed coefficient count for a scheme at length N.
 %   olen = GAUSSOGRAM_OUTPUT_LEN(n)
-%   olen = GAUSSOGRAM_OUTPUT_LEN(n, 'scheme', s, 'window', w, 'nyquist_flat_top', tf)
+%   olen = GAUSSOGRAM_OUTPUT_LEN(n, 'scheme', s, 'window', w, 'top_window', t)
 %
 %   Returns the number of complex coefficients a forward transform of a
 %   length-N signal produces under the given scheme. For 'dyadic_dual_real'
@@ -14,5 +14,5 @@ opts = gaussogram_parse_opts(varargin{:});
 
 gaussogram_check_built();
 olen = gaussogram_mex('output_len', double(n), scheme_id, window_id, ...
-    double(opts.nyquist_flat_top));
+    opts.top_window_id);
 end

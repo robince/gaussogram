@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::engine::Gaussogram1d;
 use crate::error::GaussogramError;
 use crate::scheme::{dyadic_complex_with, dyadic_dual_real_with, dyadic_real_with, Scheme};
-use crate::window::WindowKind;
+use crate::window::{TopWindow, WindowKind};
 
 /// Number of engines kept. An engine holds roughly `40 * N` bytes of windows
 /// and FFT twiddles (about 40 MB at N = 2^20), so keep this small.
@@ -28,7 +28,7 @@ pub struct SchemeSpec {
     pub n: usize,
     pub window: WindowKind,
     /// Only meaningful for `DyadicDualReal`.
-    pub nyquist_flat_top: bool,
+    pub top_window: TopWindow,
     /// Ignored by `DyadicComplex`.
     pub bands_per_octave: usize,
 }
@@ -39,7 +39,7 @@ impl SchemeSpec {
             SchemeKind::DyadicDualReal => dyadic_dual_real_with(
                 self.n,
                 self.window,
-                self.nyquist_flat_top,
+                self.top_window,
                 self.bands_per_octave,
             ),
             SchemeKind::DyadicReal => dyadic_real_with(self.n, self.window, self.bands_per_octave),
@@ -49,8 +49,8 @@ impl SchemeSpec {
 
     /// Fields a scheme ignores are normalised so they do not split cache entries.
     fn canonical(mut self) -> Self {
-        if self.kind != SchemeKind::DyadicDualReal {
-            self.nyquist_flat_top = false;
+        if self.kind != SchemeKind::DyadicDualReal || self.window == WindowKind::Box {
+            self.top_window = TopWindow::default();
         }
         if self.kind == SchemeKind::DyadicComplex {
             self.bands_per_octave = 1;

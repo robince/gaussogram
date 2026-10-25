@@ -26,6 +26,7 @@ passed = passed + run_case(@t_stale_handle_rejected);
 passed = passed + run_case(@t_rejects_dyadic_complex_forward);
 passed = passed + run_case(@t_rejects_non_integer_n);
 passed = passed + run_case(@t_partitions_and_inverse_validate);
+passed = passed + run_case(@t_top_window_options);
 
 fprintf('\nAll %d gaussogram test cases passed.\n', passed);
 end
@@ -363,4 +364,58 @@ catch
     threw = true;
 end
 assert_true(threw, 'a non-integer n should be rejected');
+end
+
+function t_top_window_options()
+n = 256;
+sig = zeros(n, 1);
+sig(6) = 1;
+c_default = gaussogram(sig);
+c_wide = gaussogram(sig, 'top_window', 'wide');
+c_gauss = gaussogram(sig, 'top_window', 'gaussian');
+c_flat = gaussogram(sig, 'top_window', 'flat');
+assert_true(isequal(c_default, c_wide), 'the default top window should be wide');
+assert_true(~isequal(c_wide, c_gauss) && ~isequal(c_wide, c_flat) && ~isequal(c_gauss, c_flat), ...
+    'the three top windows should differ at one band per octave');
+% Raw C ABI ids: 0 = wide, 1 = flat (the old nyquist_flat_top = true), 2 = gaussian.
+assert_true(isequal(gaussogram_mex('forward', sig, 0, 0, 1), c_flat), 'id 1 should be flat');
+assert_true(isequal(gaussogram_mex('forward', sig, 0, 0, 2), c_gauss), 'id 2 should be gaussian');
+threw = false;
+try
+    gaussogram_mex('forward', sig, 0, 0, 3);
+catch
+    threw = true;
+end
+assert_true(threw, 'an unknown top_window id should be rejected');
+% The deprecated alias still selects the flat top, with a warning.
+lastwarn('');
+s = warning('off', 'gaussogram:deprecated');
+restore = onCleanup(@() warning(s));
+c_alias = gaussogram(sig, 'nyquist_flat_top', true);
+[~, wid] = lastwarn();
+assert_true(strcmp(wid, 'gaussogram:deprecated'), 'nyquist_flat_top should warn');
+assert_true(isequal(c_alias, c_flat), 'nyquist_flat_top=true should mean flat');
+eng = Gaussogram1d(n, 'nyquist_flat_top', true);
+assert_true(strcmp(eng.top_window, 'flat') && eng.nyquist_flat_top, 'engine should record flat');
+assert_true(isequal(eng.forward(sig), c_flat), 'flat engine should match the function');
+delete(eng);
+threw = false;
+try
+    gaussogram(sig, 'top_window', 'gaussian', 'nyquist_flat_top', true);
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:top_window');
+end
+assert_true(threw, 'conflicting top_window options should be rejected');
+threw = false;
+try
+    gaussogram(sig, 'scheme', 'dyadic_real', 'top_window', 'flat');
+catch
+    threw = true;
+end
+assert_true(threw, 'a non-default top_window should be rejected for dyadic_real');
+% to_grid accepts the option in every frequency mode.
+for mode = {'block', 'linear', 'gauss'}
+    grid = gaussogram_to_grid(c_wide, n, 'top_window', 'wide', 'interp_freq', mode{1});
+    assert_true(all(isfinite(grid(:))), 'to_grid with top_window should be finite');
+end
 end

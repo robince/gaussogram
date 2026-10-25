@@ -9,8 +9,8 @@ use num_complex::Complex;
 
 use gaussogram_core::{
     cached_engine, complex_partitions, legacy_real_partitions, Gaussogram1d, GaussogramError,
-    SchemeKind, SchemeSpec, Scratch, WindowKind, STATUS_INTERNAL, STATUS_OK, STATUS_UNKNOWN_SCHEME,
-    STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
+    SchemeKind, SchemeSpec, Scratch, TopWindow, WindowKind, STATUS_INTERNAL, STATUS_OK,
+    STATUS_UNKNOWN_SCHEME, STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
 };
 
 pub use gaussogram_core::{
@@ -44,7 +44,7 @@ fn engine_from_id(
     scheme_id: i32,
     n: usize,
     window: WindowKind,
-    nyquist_flat_top: bool,
+    top_window_id: i32,
 ) -> Result<Arc<Gaussogram1d>, i32> {
     let kind = match scheme_id {
         0 => SchemeKind::DyadicDualReal,
@@ -52,9 +52,12 @@ fn engine_from_id(
         2 => SchemeKind::DyadicComplex,
         _ => return Err(STATUS_UNKNOWN_SCHEME),
     };
+    let Some(top_window) = top_window_from_id(top_window_id) else {
+        return Err(STATUS_UNSUPPORTED_OPTION);
+    };
     // Reject options the scheme does not support instead of silently
     // ignoring them.
-    if nyquist_flat_top && kind != SchemeKind::DyadicDualReal {
+    if top_window_id != 0 && kind != SchemeKind::DyadicDualReal {
         return Err(STATUS_UNSUPPORTED_OPTION);
     }
     // The C ABI does not yet expose bands_per_octave; the one-band-per-octave
@@ -63,10 +66,21 @@ fn engine_from_id(
         kind,
         n,
         window,
-        nyquist_flat_top,
+        top_window,
         bands_per_octave: 1,
     })
     .map_err(|e| e.status_code())
+}
+
+/// `top_window_id`: 0 = default (wide Gaussian), 1 = flat top, 2 = plain
+/// Gaussian. 1 keeps the meaning of the former `nyquist_flat_top = 1`.
+fn top_window_from_id(top_window_id: i32) -> Option<TopWindow> {
+    match top_window_id {
+        0 => Some(TopWindow::Wide),
+        1 => Some(TopWindow::Flat),
+        2 => Some(TopWindow::Gaussian),
+        _ => None,
+    }
 }
 
 fn kind_from_id(window_id: i32) -> Option<WindowKind> {
@@ -78,8 +92,11 @@ fn kind_from_id(window_id: i32) -> Option<WindowKind> {
 }
 
 /// Create an engine. `scheme_id`: 0=dyadic_dual_real, 1=dyadic_real,
-/// 2=dyadic_complex. `window_id`: 0=gaussian, 1=box. On success writes the
-/// handle pointer to `*out_handle` and returns STATUS_OK.
+/// 2=dyadic_complex. `window_id`: 0=gaussian, 1=box. `top_window_id` (the
+/// top band of dyadic_dual_real): 0=wide Gaussian (default), 1=flat top,
+/// 2=plain Gaussian; other schemes accept only 0, and an unknown id returns
+/// STATUS_UNSUPPORTED_OPTION. On success writes the handle pointer to
+/// `*out_handle` and returns STATUS_OK.
 ///
 /// # Safety
 /// `out_handle` must be a valid pointer to a `*mut GaussogramHandle`.
@@ -88,14 +105,14 @@ pub unsafe extern "C" fn gaussogram_create(
     scheme_id: i32,
     n: usize,
     window_id: i32,
-    nyquist_flat_top: i32,
+    top_window_id: i32,
     out_handle: *mut *mut GaussogramHandle,
 ) -> i32 {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         let Some(kind) = kind_from_id(window_id) else {
             return STATUS_UNKNOWN_WINDOW;
         };
-        let engine = match engine_from_id(scheme_id, n, kind, nyquist_flat_top != 0) {
+        let engine = match engine_from_id(scheme_id, n, kind, top_window_id) {
             Ok(e) => e,
             Err(status) => return status,
         };

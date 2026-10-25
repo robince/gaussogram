@@ -7,6 +7,7 @@ Keeps the legacy `pygft` function names (`gft1d`, `gft1d_real`, `partitions`,
 
 from __future__ import annotations
 
+import warnings
 from typing import NamedTuple
 
 import numpy as np
@@ -14,10 +15,71 @@ from numpy.typing import NDArray
 
 from . import _native
 
-#: Reusable transform handle (builds FFT plans + scratch once, reuses across
-#: calls). Prefer this over the free functions for tight loops. See the native
-#: docstring for threading caveats (one instance per thread).
-Gaussogram1d = _native.Gaussogram1d
+#: Gain of the ``"wide"`` top-band Gaussian at its band edges. Mirrors
+#: ``TOP_EDGE_GAIN`` in the Rust core (``window.rs``).
+_TOP_EDGE_GAIN = 0.63
+
+_TOP_WINDOWS = ("wide", "gaussian", "flat")
+
+
+def _resolve_top_window(top_window, nyquist_flat_top) -> str:
+    """Resolve ``top_window`` and the deprecated ``nyquist_flat_top`` alias to
+    one of ``"wide"``, ``"gaussian"``, ``"flat"``.
+
+    ``top_window=None`` means the default, ``"wide"``. A bool in the
+    ``top_window`` slot is the old positional ``nyquist_flat_top``.
+    """
+    if isinstance(top_window, (bool, np.bool_)):
+        if nyquist_flat_top is not None:
+            raise TypeError("nyquist_flat_top given twice (positionally and by keyword)")
+        top_window, nyquist_flat_top = None, bool(top_window)
+    if nyquist_flat_top is not None:
+        # Called from a public wrapper, so the user's frame is two up.
+        warnings.warn(
+            "nyquist_flat_top is deprecated; use top_window='flat' (or the "
+            "default top_window='wide')",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        if nyquist_flat_top:
+            if top_window not in (None, "flat"):
+                raise ValueError(
+                    f"nyquist_flat_top=True conflicts with top_window={top_window!r}"
+                )
+            top_window = "flat"
+        elif top_window == "flat":
+            raise ValueError("nyquist_flat_top=False conflicts with top_window='flat'")
+    if top_window is None:
+        return "wide"
+    if top_window not in _TOP_WINDOWS:
+        raise ValueError(
+            f"top_window must be 'wide', 'gaussian' or 'flat' (got {top_window!r})"
+        )
+    return top_window
+
+
+class Gaussogram1d(_native.Gaussogram1d):
+    """Reusable transform handle (builds FFT plans + scratch once, reuses
+    across calls). Prefer this over the free functions for tight loops.
+
+    ``Gaussogram1d(n, scheme="dyadic_dual_real", window_type="gaussian",
+    top_window=None, bands_per_octave=1)``; ``top_window`` is as in
+    :func:`gft1d_real`. One instance is **not** safe to call concurrently from
+    several Python threads: create one per thread.
+    """
+
+    def __new__(
+        cls,
+        n: int,
+        scheme: str = "dyadic_dual_real",
+        window_type: str = "gaussian",
+        top_window: str | None = None,
+        bands_per_octave: int = 1,
+        *,
+        nyquist_flat_top: bool | None = None,
+    ):
+        top = _resolve_top_window(top_window, nyquist_flat_top)
+        return super().__new__(cls, int(n), scheme, window_type, top, int(bands_per_octave))
 
 __all__ = [
     "gft1d",
@@ -79,8 +141,10 @@ def gft1d_real(
     x,
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
-    nyquist_flat_top: bool = False,
+    top_window: str | None = None,
     bands_per_octave: int = 1,
+    *,
+    nyquist_flat_top: bool | None = None,
 ) -> NDArray[np.complex128]:
     """Forward GFT of a real signal.
 
@@ -94,11 +158,28 @@ def gft1d_real(
     ``dyadic_dual_real`` stays ``N-1`` for every value — it only reshapes the
     tiling. Running a few values (e.g. 1, 2, 4) gives complementary
     multiresolution views for far less data than a dense spectrogram.
+
+    ``top_window`` shapes the top band of ``dyadic_dual_real`` (tiling A's band
+    just below Nyquist, whose upper half no tiling-B band covers). ``None``
+    means the default:
+
+    * ``"wide"`` (default): a Gaussian with the usual peak, widened so its gain
+      at both band edges is 0.63. This removes the dead zone below Nyquist
+      (frame condition number ~3.5 instead of ~84 at ``bands_per_octave=1``)
+      with almost no ringing in the band's time response. At
+      ``bands_per_octave >= 2`` the plain Gaussian is already as wide, so
+      nothing changes.
+    * ``"gaussian"``: the plain Gaussian every other band uses.
+    * ``"flat"``: the plain Gaussian held at its peak value up to Nyquist.
+      Conditions the frame too, but the step where the band's FFT wraps makes
+      its time response ring.
+
+    Other schemes accept only the default. Box windows ignore it.
+    ``nyquist_flat_top=True`` is a deprecated alias for ``top_window="flat"``.
     """
     x = _require_1d(x, np.float64, "x")
-    return _native.gft1d_real(
-        x, scheme, window_type, nyquist_flat_top, int(bands_per_octave)
-    )
+    top = _resolve_top_window(top_window, nyquist_flat_top)
+    return _native.gft1d_real(x, scheme, window_type, top, int(bands_per_octave))
 
 
 def gft1d(z, window_type: str = "gaussian") -> NDArray[np.complex128]:
@@ -113,7 +194,9 @@ def inverse_real(
     window_type: str = "gaussian",
     bands_per_octave: int = 1,
     scheme: str | None = None,
-    nyquist_flat_top: bool = False,
+    top_window: str | None = None,
+    *,
+    nyquist_flat_top: bool | None = None,
 ) -> NDArray[np.float64]:
     """Inverse of a real-input scheme.
 
@@ -130,15 +213,15 @@ def inverse_real(
     ``2^k+1`` and ``N-1`` is always ``2^k-1``, which never coincide.
 
     .. warning::
-        ``bands_per_octave``, ``window_type`` and ``nyquist_flat_top`` must
-        match the values passed to the forward transform. A mismatch **cannot
-        be detected** — the packed length is the same for every
-        ``bands_per_octave`` — and silently reconstructs the wrong signal.
+        ``bands_per_octave``, ``window_type`` and ``top_window`` must match
+        the values passed to the forward transform. A mismatch **cannot be
+        detected** — the packed length is the same for every
+        ``bands_per_octave`` and ``top_window`` — and silently reconstructs the
+        wrong signal.
     """
     coeffs = _require_1d(coeffs, np.complex128, "coeffs")
-    return _native.inverse_real(
-        coeffs, window_type, int(bands_per_octave), scheme, bool(nyquist_flat_top)
-    )
+    top = _resolve_top_window(top_window, nyquist_flat_top)
+    return _native.inverse_real(coeffs, window_type, int(bands_per_octave), scheme, top)
 
 
 def partitions(n: int) -> NDArray[np.int32]:
@@ -155,12 +238,15 @@ def scheme_bands(
     n: int,
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
-    nyquist_flat_top: bool = False,
+    top_window: str | None = None,
     bands_per_octave: int = 1,
+    *,
+    nyquist_flat_top: bool | None = None,
 ) -> BandLayout:
     """Band layout (src_lo, width, fcentre, out_off) for a scheme."""
+    top = _resolve_top_window(top_window, nyquist_flat_top)
     lo, width, fcentre, out_off = _native.scheme_bands(
-        int(n), scheme, window_type, nyquist_flat_top, int(bands_per_octave)
+        int(n), scheme, window_type, top, int(bands_per_octave)
     )
     return BandLayout(lo, width, fcentre, out_off)
 
@@ -169,14 +255,15 @@ def output_len(
     n: int,
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
-    nyquist_flat_top: bool = False,
+    top_window: str | None = None,
     bands_per_octave: int = 1,
+    *,
+    nyquist_flat_top: bool | None = None,
 ) -> int:
     """Packed output length for a scheme (invariant to ``bands_per_octave``)."""
+    top = _resolve_top_window(top_window, nyquist_flat_top)
     return int(
-        _native.output_len(
-            int(n), scheme, window_type, nyquist_flat_top, int(bands_per_octave)
-        )
+        _native.output_len(int(n), scheme, window_type, top, int(bands_per_octave))
     )
 
 
@@ -288,7 +375,7 @@ def to_grid(
     n: int,
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
-    nyquist_flat_top: bool = False,
+    top_window: str | None = None,
     interp: str = "linear",
     interp_freq: str = "block",
     normalize: str = "none",
@@ -296,6 +383,8 @@ def to_grid(
     bands_per_octave: int = 1,
     n_freq: int | None = None,
     n_time: int | None = None,
+    *,
+    nyquist_flat_top: bool | None = None,
 ) -> NDArray[np.float64]:
     """Render packed GFT coefficients onto a ``(n_freq, n_time)`` magnitude
     grid for display: frequency on the vertical axis, time on the horizontal.
@@ -337,7 +426,9 @@ def to_grid(
         neighbouring centres), ``"gauss"`` confines each band to its true
         effective bandwidth (FWHM ≈ 1/3 octave), so a tone renders as a compact
         blob at its frequency. Best matches the transform's real resolution for
-        the overlapping dual scheme.
+        the overlapping dual scheme. The top band of ``dyadic_dual_real``
+        follows ``top_window`` (wider for ``"wide"``, flat above its peak for
+        ``"flat"``), as in the forward transform.
     normalize:
         Per-band brightness normalisation. A spectral line of fixed amplitude
         produces coefficients of magnitude ``∝ 1/width``, so wider (higher-
@@ -365,7 +456,8 @@ def to_grid(
             "'dyadic_complex' is not supported"
         )
     coeffs = np.ascontiguousarray(coeffs, dtype=np.complex128)
-    layout = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
+    top = _resolve_top_window(top_window, nyquist_flat_top)
+    layout = scheme_bands(n, scheme, window_type, top, bands_per_octave)
     expected = int((layout.out_off + layout.width).max())
     if coeffs.ndim != 1 or len(coeffs) != expected:
         raise ValueError(
@@ -457,10 +549,14 @@ def to_grid(
                 wj = np.ones(r1 - r0, dtype=np.float64)
             else:
                 sigma = fc / (2.0 * np.pi)  # freq-domain σ of the band Gaussian
+                # Mirror the forward transform's top window on the dual scheme's
+                # top band (the one ending just below the width-1 Nyquist band).
+                is_top = scheme == "dyadic_dual_real" and lo + w == n // 2
+                if is_top and top == "wide":
+                    sigma_wide = (w / 2.0) / np.sqrt(2.0 * np.log(1.0 / _TOP_EDGE_GAIN))
+                    sigma = max(sigma, sigma_wide)
                 wj = np.exp(-((rows - fc) ** 2) / (2.0 * sigma**2))
-                # Mirror the forward transform's Nyquist flat-top on the top band
-                # (the one ending just below the width-1 Nyquist band).
-                if nyquist_flat_top and lo + w >= n // 2:
+                if is_top and top == "flat":
                     wj[rows >= fc] = 1.0
             # Accumulate in row blocks so the outer product stays small.
             for b0 in range(r0, r1, step):
@@ -482,7 +578,7 @@ def to_grid(
 # vector (transformer positional features / continuous convolutions / GNNs /
 # graph-Laplacian smoothness / structured-sparsity groups) WITHOUT densifying it
 # to an N x N/2 grid. Both are signal-INDEPENDENT — they depend only on
-# (n, scheme, window_type, nyquist_flat_top) — so compute once and reuse. This is
+# (n, scheme, window_type, top_window) — so compute once and reuse. This is
 # the complement of `to_grid`, which resamples values for display; here the
 # values are untouched and only the basis geometry is exposed.
 
@@ -525,8 +621,10 @@ def coefficient_geometry(
     n: int,
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
-    nyquist_flat_top: bool = False,
+    top_window: str | None = None,
     bands_per_octave: int = 1,
+    *,
+    nyquist_flat_top: bool | None = None,
 ) -> CoeffGeometry:
     """Geometry of every packed coefficient as points in the time-frequency
     plane (see :class:`CoeffGeometry`). Use as positional features for a
@@ -536,7 +634,8 @@ def coefficient_geometry(
     is the octave index and ``sub`` is the rank within the octave, so the two
     together locate a coefficient on the (log-frequency, sub-band) lattice.
     """
-    lay = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
+    top = _resolve_top_window(top_window, nyquist_flat_top)
+    lay = scheme_bands(n, scheme, window_type, top, bands_per_octave)
     total = int((lay.out_off + lay.width).max())
     time = np.zeros(total)
     freq = np.zeros(total)
@@ -619,9 +718,11 @@ def coefficient_adjacency(
     n: int,
     scheme: str = "dyadic_dual_real",
     window_type: str = "gaussian",
-    nyquist_flat_top: bool = False,
+    top_window: str | None = None,
     bands_per_octave: int = 1,
     circular: bool = False,
+    *,
+    nyquist_flat_top: bool | None = None,
 ) -> CoeffAdjacency:
     """Neighbourhood graph over the packed coefficients (see
     :class:`CoeffAdjacency`). Three edge types:
@@ -643,7 +744,8 @@ def coefficient_adjacency(
     ``circular=True`` for the periodic graph, which adds the wrap-around edge
     within every band of width >= 3 and wraps cross-band edges too.
     """
-    lay = scheme_bands(n, scheme, window_type, nyquist_flat_top, bands_per_octave)
+    top = _resolve_top_window(top_window, nyquist_flat_top)
+    lay = scheme_bands(n, scheme, window_type, top, bands_per_octave)
     b_freq, b_tiling = _band_freq_and_tiling(lay, n, scheme)
     bands = []
     for bi, (lo, w, off) in enumerate(zip(lay.src_lo, lay.width, lay.out_off)):
