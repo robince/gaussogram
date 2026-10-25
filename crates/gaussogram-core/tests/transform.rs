@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use gaussogram_core::{
     build, dyadic_complex, dyadic_dual_real, dyadic_dual_real_with, dyadic_real, dyadic_real_with,
-    GaussogramError, WindowKind,
+    GaussogramError, TopWindow, WindowKind, TOP_EDGE_GAIN,
 };
 use num_complex::Complex;
 
@@ -82,7 +82,8 @@ fn real_golden_regression() {
         let scheme = match scheme_name {
             "dyadic_real" => dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap(),
             "dyadic_dual_real" => {
-                dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap()
+                // Frozen before the wide top window became the default.
+                dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Gaussian, bpo).unwrap()
             }
             other => panic!("unknown scheme in golden file: {other}"),
         };
@@ -222,13 +223,13 @@ fn lcg(seed: u64, len: usize) -> Vec<f64> {
 #[test]
 fn dual_round_trip() {
     // The frame inverse of dyadic_dual_real is exact for unmodified
-    // coefficients, for every bands_per_octave, window and Nyquist option.
+    // coefficients, for every bands_per_octave, window and top window.
     for &bpo in &[1usize, 2, 4, 8] {
         for kind in [WindowKind::Gaussian, WindowKind::Box] {
-            for flat in [false, true] {
+            for top in [TopWindow::Wide, TopWindow::Gaussian, TopWindow::Flat] {
                 for k in 3..=12 {
                     let n = 1usize << k;
-                    let Ok(scheme) = dyadic_dual_real_with(n, kind, flat, bpo) else {
+                    let Ok(scheme) = dyadic_dual_real_with(n, kind, top, bpo) else {
                         continue; // bpo too large for this N
                     };
                     let engine = build(scheme);
@@ -244,7 +245,7 @@ fn dual_round_trip() {
                         .fold(0.0, f64::max);
                     assert!(
                         err < 1e-10,
-                        "N={n} bpo={bpo} {kind:?} flat={flat}: err={err}"
+                        "N={n} bpo={bpo} {kind:?} {top:?}: err={err}"
                     );
                 }
             }
@@ -285,7 +286,8 @@ fn dual_inverse_is_least_squares() {
     // larger (in that norm) than that of inverting tiling A alone.
     for &bpo in &[1usize, 4] {
         let n = 512;
-        let engine = build(dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap());
+        let engine =
+            build(dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Wide, bpo).unwrap());
         let a_only = build(dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap());
         let olen = engine.output_len();
         let widths = coeff_widths(&engine);
@@ -381,7 +383,8 @@ fn dual_inverse_energy_weighting_beats_stored_weighting_for_independent_noise() 
     // rather than a margin.
     for &bpo in &[1usize, 4] {
         let n = 1024;
-        let engine = build(dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap());
+        let engine =
+            build(dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Wide, bpo).unwrap());
         let olen = engine.output_len();
         let widths = coeff_widths(&engine);
         let (mut err_energy, mut err_stored) = (0.0f64, 0.0f64);
@@ -476,29 +479,100 @@ fn band_edge_tone_rescued_by_tiling_b() {
     }
 }
 
-#[test]
-fn nyquist_flat_top_changes_top_band_window() {
-    let n = 256;
-    let plain = dyadic_dual_real_with(n, WindowKind::Gaussian, false, 1).unwrap();
-    let flat = dyadic_dual_real_with(n, WindowKind::Gaussian, true, 1).unwrap();
-    // Top A band is the one ending at N/2, just below the width-1 Nyquist band.
-    let top_idx = plain.bands.iter().position(|b| b.src_hi == n / 2).unwrap();
-    let nyq_idx = plain.bands.iter().position(|b| b.src_lo == n / 2).unwrap();
-    assert_eq!(plain.bands[nyq_idx].width(), 1);
-    // The Nyquist band itself is untapered either way.
-    assert_eq!(plain.windows[nyq_idx].screen, vec![1.0]);
-    assert_eq!(flat.windows[nyq_idx].screen, vec![1.0]);
-    let w_plain = &plain.windows[top_idx];
-    let w_flat = &flat.windows[top_idx];
-    assert!(w_flat.nyquist_flat_top);
-    let peak = w_flat.fcentre - plain.bands[top_idx].src_lo;
-    // From the peak to Nyquist, the flat-top window is constant at the peak value.
-    let peak_val = w_flat.screen[peak];
-    for v in &w_flat.screen[peak..] {
-        assert!((v - peak_val).abs() < 1e-15);
+/// Index of tiling A's top band: the one ending at N/2, just below the
+/// width-1 Nyquist band.
+fn top_band_idx(s: &gaussogram_core::Scheme) -> usize {
+    s.bands.iter().position(|b| b.src_hi == s.n / 2).unwrap()
+}
+
+/// Frame diagonal `D[k] = sum over bands covering k of screen^2`, k = 0..=N/2.
+fn frame_diagonal(s: &gaussogram_core::Scheme) -> Vec<f64> {
+    let mut d = vec![0.0f64; s.n / 2 + 1];
+    for (b, w) in s.bands.iter().zip(&s.windows) {
+        for (k, v) in w.screen.iter().enumerate() {
+            d[b.src_lo + k] += v * v;
+        }
     }
-    // The plain window decays after the peak (Nyquist-adjacent bins attenuated).
-    assert!(w_plain.screen[w_plain.screen.len() - 1] < peak_val - 1e-6);
+    d
+}
+
+fn min_max(d: &[f64]) -> (f64, f64) {
+    d.iter()
+        .fold((f64::INFINITY, 0.0f64), |(lo, hi), &v| (lo.min(v), hi.max(v)))
+}
+
+#[test]
+fn wide_top_window_bounds_the_dual_frame() {
+    // The default (wide) top window lifts the dead zone below Nyquist to the
+    // floor of the rest of the frame.
+    for n in [256usize, 1024, 4096] {
+        for bpo in [1usize, 2, 4] {
+            let s = dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Wide, bpo).unwrap();
+            let (lo, hi) = min_max(&frame_diagonal(&s));
+            assert!(lo >= 0.39, "N={n} bpo={bpo}: min D = {lo}");
+            if bpo == 1 {
+                assert!(hi / lo < 4.0, "N={n}: condition number {}", hi / lo);
+            }
+        }
+    }
+    // The plain Gaussian leaves the dead zone (condition number ~84 at N=1024).
+    let s = dyadic_dual_real_with(1024, WindowKind::Gaussian, TopWindow::Gaussian, 1).unwrap();
+    let (lo, hi) = min_max(&frame_diagonal(&s));
+    assert!(lo < 0.02 && hi / lo > 50.0, "min D = {lo}, cond = {}", hi / lo);
+}
+
+#[test]
+fn top_window_shapes() {
+    let n = 1024;
+    let build_top = |top, bpo| {
+        let s = dyadic_dual_real_with(n, WindowKind::Gaussian, top, bpo).unwrap();
+        let i = top_band_idx(&s);
+        (s.windows[i].clone(), s.bands[i])
+    };
+    // bpo = 1: the wide window reaches TOP_EDGE_GAIN at its lower edge, peaks
+    // at 1 on w/2, and is symmetric about the peak.
+    let (wide, band) = build_top(TopWindow::Wide, 1);
+    let (plain, _) = build_top(TopWindow::Gaussian, 1);
+    let (flat, _) = build_top(TopWindow::Flat, 1);
+    let w = band.width();
+    assert_eq!(w, n / 4);
+    assert_eq!(wide.top_window, Some(TopWindow::Wide));
+    assert!((wide.screen[0] - TOP_EDGE_GAIN).abs() < 0.005, "{}", wide.screen[0]);
+    assert_eq!(wide.screen[w / 2], 1.0);
+    for m in 1..w / 2 {
+        assert!((wide.screen[w / 2 - m] - wide.screen[w / 2 + m]).abs() < 1e-12);
+    }
+    // Never narrower than the plain Gaussian.
+    for (a, b) in wide.screen.iter().zip(&plain.screen) {
+        assert!(a >= b);
+    }
+    // The plain option is the ordinary band screen; the flat one holds the peak
+    // value from the peak to Nyquist and keeps the plain lower half.
+    let ordinary = gaussogram_core::window::gaussian_band_screen(n, wide.fcentre as i64, w);
+    assert_eq!(plain.screen, ordinary);
+    assert!(plain.screen[w - 1] < 0.2);
+    assert_eq!(&flat.screen[..w / 2], &plain.screen[..w / 2]);
+    for v in &flat.screen[w / 2..] {
+        assert!((v - plain.screen[w / 2]).abs() < 1e-15);
+    }
+    // bpo >= 2: the plain Gaussian is already the wider one, so the default
+    // leaves it unchanged.
+    for bpo in [2usize, 4] {
+        let (wide, _) = build_top(TopWindow::Wide, bpo);
+        let (plain, _) = build_top(TopWindow::Gaussian, bpo);
+        assert_eq!(wide.screen, plain.screen, "bpo={bpo}");
+    }
+    // Only tiling A's top band carries the option; box windows ignore it.
+    let s = dyadic_dual_real(n).unwrap();
+    let i = top_band_idx(&s);
+    for (j, win) in s.windows.iter().enumerate() {
+        assert_eq!(win.top_window.is_some(), j == i);
+    }
+    let boxed = dyadic_dual_real_with(n, WindowKind::Box, TopWindow::Wide, 1).unwrap();
+    assert!(boxed
+        .windows
+        .iter()
+        .all(|w| w.top_window.is_none() && w.screen.iter().all(|&v| v == 1.0)));
 }
 
 #[test]
@@ -559,15 +633,15 @@ fn engine_cache_shares_engines_and_normalises_ignored_options() {
         kind: SchemeKind::DyadicReal,
         n: 512,
         window: WindowKind::Gaussian,
-        nyquist_flat_top: false,
+        top_window: TopWindow::Wide,
         bands_per_octave: 2,
     };
     let a = cached_engine(spec).unwrap();
     let b = cached_engine(spec).unwrap();
     assert!(Arc::ptr_eq(&a, &b));
-    // nyquist_flat_top is meaningless for dyadic_real: same engine.
+    // top_window is meaningless for dyadic_real: same engine.
     let c = cached_engine(SchemeSpec {
-        nyquist_flat_top: true,
+        top_window: TopWindow::Flat,
         ..spec
     })
     .unwrap();

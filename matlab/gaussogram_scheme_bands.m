@@ -1,7 +1,7 @@
 function bands = gaussogram_scheme_bands(n, varargin)
 %GAUSSOGRAM_SCHEME_BANDS  Per-band layout of a scheme at length N.
 %   bands = GAUSSOGRAM_SCHEME_BANDS(n)
-%   bands = GAUSSOGRAM_SCHEME_BANDS(n, 'scheme', s, 'window', w, 'nyquist_flat_top', tf, ...
+%   bands = GAUSSOGRAM_SCHEME_BANDS(n, 'scheme', s, 'window', w, 'top_window', t, ...
 %                                   'bands_per_octave', b)
 %
 %   Returns a struct with parallel column vectors describing each band:
@@ -25,7 +25,7 @@ opts = gaussogram_parse_opts(varargin{:});
 gaussogram_check_built();
 % nb x 4 [lo, width, fcentre, out_off]
 m = gaussogram_mex('scheme_bands', double(n), scheme_id, window_id, ...
-    double(opts.nyquist_flat_top), opts.bands_per_octave);
+    opts.top_window_id, opts.bands_per_octave);
 
 bands.src_lo  = m(:, 1);
 bands.width   = m(:, 2);

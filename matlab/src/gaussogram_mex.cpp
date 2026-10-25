@@ -50,8 +50,9 @@ const char* status_message(int32_t status) {
         case GAUSSOGRAM_STATUS_UNKNOWN_SCHEME:
             return "unknown scheme id";
         case GAUSSOGRAM_STATUS_UNSUPPORTED_OPTION:
-            return "option not supported by this scheme (nyquist_flat_top needs "
-                   "dyadic_dual_real; bands_per_octave > 1 needs a real scheme)";
+            return "option not supported by this scheme (unknown top_window id, or a "
+                   "non-default top_window outside dyadic_dual_real; bands_per_octave > 1 "
+                   "needs a real scheme)";
         case GAUSSOGRAM_STATUS_INTERNAL:
             return "internal error";
         default:
@@ -105,10 +106,10 @@ struct Handle {
     }
 };
 
-GaussogramHandle* make_handle(int32_t scheme_id, size_t n, int32_t window_id, int32_t nyquist,
+GaussogramHandle* make_handle(int32_t scheme_id, size_t n, int32_t window_id, int32_t top_window,
                               size_t bpo) {
     GaussogramHandle* h = nullptr;
-    int32_t st = gaussogram_create_ex(scheme_id, n, window_id, nyquist, bpo, &h);
+    int32_t st = gaussogram_create_ex(scheme_id, n, window_id, top_window, bpo, &h);
     if (st != GAUSSOGRAM_STATUS_OK || h == nullptr) {
         mexErrMsgIdAndTxt(
             "gaussogram:create",
@@ -216,7 +217,7 @@ GaussogramHandle* read_handle(const mxArray* arg) {
 // dyadic_complex. Returns complex (output_len x count).
 void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 5 || nrhs == 6, "gaussogram:nrhs",
-            "forward expects (op, signal, scheme_id, window_id, nyquist_flat_top[, bands_per_octave]).");
+            "forward expects (op, signal, scheme_id, window_id, top_window_id[, bands_per_octave]).");
     const mxArray* sig_in = prhs[1];
     require(mxIsDouble(sig_in) && !mxIsSparse(sig_in), "gaussogram:sigType",
             "signal must be a full double array.");
@@ -225,11 +226,11 @@ void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
-    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    int32_t top_window = scalar_int(prhs[4], "gaussogram:top_window", "top_window_id");
     size_t bpo = optional_bpo(nrhs, prhs, 5);
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist, bpo);
+    h.ptr = make_handle(scheme_id, n, window_id, top_window, bpo);
     plhs[0] = forward_into_output(h.ptr, sig_in, &h);
     (void)nlhs;
 }
@@ -239,14 +240,14 @@ void op_forward(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 // resident so live handles are not orphaned by `clear`. Pair with 'destroy'.
 void op_create(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 5 || nrhs == 6, "gaussogram:nrhs",
-            "create expects (op, n, scheme_id, window_id, nyquist_flat_top[, bands_per_octave]).");
+            "create expects (op, n, scheme_id, window_id, top_window_id[, bands_per_octave]).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
-    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    int32_t top_window = scalar_int(prhs[4], "gaussogram:top_window", "top_window_id");
     size_t bpo = optional_bpo(nrhs, prhs, 5);
 
-    GaussogramHandle* h = make_handle(scheme_id, n, window_id, nyquist, bpo);
+    GaussogramHandle* h = make_handle(scheme_id, n, window_id, top_window, bpo);
     uint64_t id = next_handle_id();
     live_handles().emplace(id, h);
     mexLock();
@@ -284,35 +285,35 @@ void op_destroy(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     (void)plhs;
 }
 
-// op = 'output_len': (op, n, scheme_id, window_id, nyquist[, bpo]) -> scalar double.
+// op = 'output_len': (op, n, scheme_id, window_id, top_window_id[, bpo]) -> scalar double.
 void op_output_len(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 5 || nrhs == 6, "gaussogram:nrhs",
-            "output_len expects (op, n, scheme_id, window_id, nyquist_flat_top[, bands_per_octave]).");
+            "output_len expects (op, n, scheme_id, window_id, top_window_id[, bands_per_octave]).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
-    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    int32_t top_window = scalar_int(prhs[4], "gaussogram:top_window", "top_window_id");
     size_t bpo = optional_bpo(nrhs, prhs, 5);
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist, bpo);
+    h.ptr = make_handle(scheme_id, n, window_id, top_window, bpo);
     plhs[0] = mxCreateDoubleScalar(static_cast<double>(gaussogram_output_len(h.ptr)));
     (void)nlhs;
 }
 
-// op = 'scheme_bands': (op, n, scheme_id, window_id, nyquist[, bpo])
+// op = 'scheme_bands': (op, n, scheme_id, window_id, top_window_id[, bpo])
 // -> double matrix (num_bands x 4): columns [src_lo, width, fcentre, out_off].
 void op_scheme_bands(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs == 5 || nrhs == 6, "gaussogram:nrhs",
-            "scheme_bands expects (op, n, scheme_id, window_id, nyquist_flat_top[, bands_per_octave]).");
+            "scheme_bands expects (op, n, scheme_id, window_id, top_window_id[, bands_per_octave]).");
     size_t n = scalar_size(prhs[1], "gaussogram:n", "n");
     int32_t scheme_id = scalar_int(prhs[2], "gaussogram:scheme", "scheme_id");
     int32_t window_id = scalar_int(prhs[3], "gaussogram:window", "window_id");
-    int32_t nyquist = scalar_int(prhs[4], "gaussogram:nyquist", "nyquist_flat_top");
+    int32_t top_window = scalar_int(prhs[4], "gaussogram:top_window", "top_window_id");
     size_t bpo = optional_bpo(nrhs, prhs, 5);
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist, bpo);
+    h.ptr = make_handle(scheme_id, n, window_id, top_window, bpo);
     int32_t nb = gaussogram_num_bands(h.ptr);
     if (nb <= 0) {
         h.reset();
@@ -377,14 +378,14 @@ mxArray* inverse_into_output(GaussogramHandle* h, const double* coeffs, size_t c
 }
 
 // op = 'inverse_real':
-// (op, coeffs, window_id[, bpo[, scheme_id[, nyquist_flat_top]]])
+// (op, coeffs, window_id[, bpo[, scheme_id[, top_window_id]]])
 // -> real column vector (length N). scheme_id defaults to dyadic_real
 // (coeffs of length N/2+1); dyadic_dual_real (length N-1) uses the core's
 // least-squares frame inverse. N is recovered from the length per scheme.
 void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     require(nrhs >= 3 && nrhs <= 6, "gaussogram:nrhs",
             "inverse_real expects (op, coeffs, window_id[, bands_per_octave[, scheme_id"
-            "[, nyquist_flat_top]]]).");
+            "[, top_window_id]]]).");
     std::vector<double> packed;
     size_t clen;
     const double* coeffs = read_coeffs(prhs[1], &packed, &clen);
@@ -394,9 +395,9 @@ void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     if (nrhs > 4) {
         scheme_id = scalar_int(prhs[4], "gaussogram:scheme", "scheme_id");
     }
-    int32_t nyquist = 0;
+    int32_t top_window = 0;
     if (nrhs > 5) {
-        nyquist = scalar_int(prhs[5], "gaussogram:nyquist", "nyquist_flat_top");
+        top_window = scalar_int(prhs[5], "gaussogram:top_window", "top_window_id");
     }
 
     size_t n = 0;
@@ -413,7 +414,7 @@ void op_inverse_real(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     }
 
     Handle h;
-    h.ptr = make_handle(scheme_id, n, window_id, nyquist, bpo);
+    h.ptr = make_handle(scheme_id, n, window_id, top_window, bpo);
     plhs[0] = inverse_into_output(h.ptr, coeffs, clen, n, &h);
     (void)nlhs;
 }

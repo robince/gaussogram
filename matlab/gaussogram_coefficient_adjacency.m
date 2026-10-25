@@ -2,7 +2,7 @@ function adj = gaussogram_coefficient_adjacency(n, varargin)
 %GAUSSOGRAM_COEFFICIENT_ADJACENCY  Neighbourhood graph over the packed coefficients.
 %   adj = GAUSSOGRAM_COEFFICIENT_ADJACENCY(n)
 %   adj = GAUSSOGRAM_COEFFICIENT_ADJACENCY(n, 'scheme', s, 'window', w, ...
-%             'nyquist_flat_top', tf, 'bands_per_octave', b, 'circular', c)
+%             'top_window', t, 'bands_per_octave', b, 'circular', c)
 %
 %   Sparse undirected graph whose nodes are the output_len packed
 %   coefficients, for GNNs, graph-Laplacian smoothness priors, structured
@@ -37,7 +37,7 @@ function adj = gaussogram_coefficient_adjacency(n, varargin)
 
 [opts, circular] = local_parse(varargin{:});
 bands = gaussogram_scheme_bands(n, 'scheme', opts.scheme, 'window', opts.window, ...
-    'nyquist_flat_top', opts.nyquist_flat_top, 'bands_per_octave', opts.bands_per_octave);
+    'top_window', opts.top_window, 'bands_per_octave', opts.bands_per_octave);
 n = double(n);
 [b_freq, b_tiling] = gaussogram_band_freq_tiling(bands, n, opts.scheme);
 nb = numel(bands.width);

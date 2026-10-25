@@ -28,7 +28,7 @@ pub use scheme::{
     dyadic_dual_real_with, dyadic_real, dyadic_real_with, legacy_real_partitions, Band, Scheme,
     Window,
 };
-pub use window::WindowKind;
+pub use window::{TopWindow, WindowKind, TOP_EDGE_GAIN};
 
 #[cfg(feature = "fft-rustfft")]
 pub use fft::{DefaultBackend, RustFftBackend};

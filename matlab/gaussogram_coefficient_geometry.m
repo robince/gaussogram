@@ -2,7 +2,7 @@ function geom = gaussogram_coefficient_geometry(n, varargin)
 %GAUSSOGRAM_COEFFICIENT_GEOMETRY  Time-frequency tile of every packed coefficient.
 %   geom = GAUSSOGRAM_COEFFICIENT_GEOMETRY(n)
 %   geom = GAUSSOGRAM_COEFFICIENT_GEOMETRY(n, 'scheme', s, 'window', w, ...
-%              'nyquist_flat_top', tf, 'bands_per_octave', b)
+%              'top_window', t, 'bands_per_octave', b)
 %
 %   Describes where each coefficient lives in the time-frequency plane, so a
 %   model can work on the packed ~N vector directly (positional features for a
@@ -35,7 +35,7 @@ function geom = gaussogram_coefficient_geometry(n, varargin)
 
 opts = gaussogram_parse_opts(varargin{:});
 bands = gaussogram_scheme_bands(n, 'scheme', opts.scheme, 'window', opts.window, ...
-    'nyquist_flat_top', opts.nyquist_flat_top, 'bands_per_octave', opts.bands_per_octave);
+    'top_window', opts.top_window, 'bands_per_octave', opts.bands_per_octave);
 n = double(n);
 [b_freq, b_tiling] = gaussogram_band_freq_tiling(bands, n, opts.scheme);
 nb = numel(bands.width);

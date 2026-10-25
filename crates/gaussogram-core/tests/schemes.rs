@@ -2,7 +2,7 @@
 
 use gaussogram_core::{
     complex_partitions, dyadic_complex, dyadic_dual_real, dyadic_dual_real_with, dyadic_real,
-    dyadic_real_with, legacy_real_partitions, Band, GaussogramError, WindowKind,
+    dyadic_real_with, legacy_real_partitions, Band, GaussogramError, TopWindow, WindowKind,
 };
 use proptest::prelude::*;
 
@@ -158,7 +158,7 @@ fn bpo1_matches_single_band_default() {
     }
     for k in 3..=12 {
         let n = 1usize << k;
-        let a = dyadic_dual_real_with(n, WindowKind::Gaussian, false, 1).unwrap();
+        let a = dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Wide, 1).unwrap();
         let b = dyadic_dual_real(n).unwrap();
         assert_eq!(a.bands, b.bands, "dyadic_dual_real N={n}");
     }
@@ -174,7 +174,7 @@ fn bpo_preserves_output_length() {
             let r = dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap();
             assert_eq!(r.output_len, n / 2 + 1, "real N={n} bpo={bpo}");
             assert!(r.invertible);
-            let d = dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap();
+            let d = dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Wide, bpo).unwrap();
             assert_eq!(d.output_len, n - 1, "dual N={n} bpo={bpo}");
         }
     }
@@ -235,7 +235,7 @@ fn dual_tiling_b_stays_offset_from_a() {
     for &bpo in &[1usize, 2, 4, 8] {
         for k in 5..=12 {
             let n = 1usize << k;
-            let s = dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap();
+            let s = dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Wide, bpo).unwrap();
             let a_len = n / 2 + 1;
             let mut a_bands: HashSet<(usize, usize)> = HashSet::new();
             let mut a_edges: HashSet<usize> = HashSet::new();
@@ -275,7 +275,7 @@ fn rejects_non_power_of_two_bpo() {
         GaussogramError::BandsPerOctave(0)
     );
     assert_eq!(
-        dyadic_dual_real_with(256, WindowKind::Gaussian, false, 6).unwrap_err(),
+        dyadic_dual_real_with(256, WindowKind::Gaussian, TopWindow::Wide, 6).unwrap_err(),
         GaussogramError::BandsPerOctave(6)
     );
 }
@@ -347,7 +347,8 @@ fn real_scheme_band_widths_are_powers_of_two() {
         for k in 3..=14 {
             let n = 1usize << k;
             let real = dyadic_real_with(n, WindowKind::Gaussian, bpo).unwrap();
-            let dual = dyadic_dual_real_with(n, WindowKind::Gaussian, false, bpo).unwrap();
+            let dual =
+                dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Wide, bpo).unwrap();
             for s in [&real, &dual] {
                 for b in &s.bands {
                     assert!(is_pow2(b.width()), "{} N={n} bpo={bpo}: {b:?}", s.name);

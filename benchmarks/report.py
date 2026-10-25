@@ -5,10 +5,18 @@ import json
 from pathlib import Path
 
 
+def top_window(s):
+    """Top-window setting; results from before `top_window` record
+    `nyquist_flat_top` instead (False then meant the plain Gaussian)."""
+    if 'top_window' in s:
+        return s['top_window']
+    return 'flat' if s['nyquist_flat_top'] else 'gaussian'
+
+
 def label(r):
     s = r['settings']
     if r['method'] in ('gaussogram', 'grid'):
-        return f"{r['method']} {s['scheme']} bpo={s['bands_per_octave']} {s['window_type']} flat={s['nyquist_flat_top']}"
+        return f"{r['method']} {s['scheme']} bpo={s['bands_per_octave']} {s['window_type']} top={top_window(s)}"
     return r['method'] + ' ' + ', '.join(f'{k}={s[k]}' for k in
                                         ('wavelet', 'voices', 'window', 'overlap') if k in s)
 
@@ -26,7 +34,8 @@ def main():
     # Split families so the full sweep remains readable.
     groups = {'comparison': [r for r in good if r['method'] not in ('gaussogram', 'grid') or
                              (r['method'] == 'gaussogram' and r['settings']['window_type'] == 'gaussian'
-                              and not r['settings']['nyquist_flat_top'] and r['settings']['bands_per_octave'] == 1)],
+                              and top_window(r['settings']) in ('wide', 'gaussian')
+                              and r['settings']['bands_per_octave'] == 1)],
               'gaussogram': [r for r in good if r['method'] == 'gaussogram'],
               'grid': [r for r in good if r['method'] == 'grid']}
     figures = []

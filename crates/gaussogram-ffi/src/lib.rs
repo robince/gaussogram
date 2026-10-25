@@ -9,8 +9,8 @@ use num_complex::Complex;
 
 use gaussogram_core::{
     cached_engine, complex_partitions, legacy_real_partitions, Gaussogram1d, GaussogramError,
-    SchemeKind, SchemeSpec, Scratch, WindowKind, STATUS_INTERNAL, STATUS_OK, STATUS_UNKNOWN_SCHEME,
-    STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
+    SchemeKind, SchemeSpec, Scratch, TopWindow, WindowKind, STATUS_INTERNAL, STATUS_OK,
+    STATUS_UNKNOWN_SCHEME, STATUS_UNKNOWN_WINDOW, STATUS_UNSUPPORTED_OPTION,
 };
 
 pub use gaussogram_core::{
@@ -44,7 +44,7 @@ fn engine_from_id(
     scheme_id: i32,
     n: usize,
     window: WindowKind,
-    nyquist_flat_top: bool,
+    top_window_id: i32,
     bands_per_octave: usize,
 ) -> Result<Arc<Gaussogram1d>, i32> {
     let kind = match scheme_id {
@@ -56,13 +56,16 @@ fn engine_from_id(
     // An invalid bands_per_octave (not a power of two >= 1) is reported as
     // such for every scheme, before the per-scheme support checks below, so
     // STATUS_UNSUPPORTED_OPTION only ever means a valid value the scheme
-    // does not support.
+    // does not support (or an unknown top_window id).
     if !bands_per_octave.is_power_of_two() {
         return Err(STATUS_BANDS_PER_OCTAVE);
     }
+    let Some(top_window) = top_window_from_id(top_window_id) else {
+        return Err(STATUS_UNSUPPORTED_OPTION);
+    };
     // Reject options the scheme does not support instead of silently
     // ignoring them.
-    if nyquist_flat_top && kind != SchemeKind::DyadicDualReal {
+    if top_window_id != 0 && kind != SchemeKind::DyadicDualReal {
         return Err(STATUS_UNSUPPORTED_OPTION);
     }
     if bands_per_octave != 1 && kind == SchemeKind::DyadicComplex {
@@ -72,10 +75,21 @@ fn engine_from_id(
         kind,
         n,
         window,
-        nyquist_flat_top,
+        top_window,
         bands_per_octave,
     })
     .map_err(|e| e.status_code())
+}
+
+/// `top_window_id`: 0 = default (wide Gaussian), 1 = flat top, 2 = plain
+/// Gaussian. 1 keeps the meaning of the former `nyquist_flat_top = 1`.
+fn top_window_from_id(top_window_id: i32) -> Option<TopWindow> {
+    match top_window_id {
+        0 => Some(TopWindow::Wide),
+        1 => Some(TopWindow::Flat),
+        2 => Some(TopWindow::Gaussian),
+        _ => None,
+    }
 }
 
 fn kind_from_id(window_id: i32) -> Option<WindowKind> {
@@ -87,8 +101,11 @@ fn kind_from_id(window_id: i32) -> Option<WindowKind> {
 }
 
 /// Create an engine with one band per octave. `scheme_id`: 0=dyadic_dual_real,
-/// 1=dyadic_real, 2=dyadic_complex. `window_id`: 0=gaussian, 1=box. On
-/// success writes the handle pointer to `*out_handle` and returns STATUS_OK.
+/// 1=dyadic_real, 2=dyadic_complex. `window_id`: 0=gaussian, 1=box.
+/// `top_window_id` (the top band of dyadic_dual_real): 0=wide Gaussian
+/// (default), 1=flat top, 2=plain Gaussian; other schemes accept only 0, and an
+/// unknown id returns STATUS_UNSUPPORTED_OPTION. On success writes the handle
+/// pointer to `*out_handle` and returns STATUS_OK.
 /// Equivalent to `gaussogram_create_ex(..., bands_per_octave = 1, ...)`.
 ///
 /// # Safety
@@ -98,10 +115,10 @@ pub unsafe extern "C" fn gaussogram_create(
     scheme_id: i32,
     n: usize,
     window_id: i32,
-    nyquist_flat_top: i32,
+    top_window_id: i32,
     out_handle: *mut *mut GaussogramHandle,
 ) -> i32 {
-    unsafe { gaussogram_create_ex(scheme_id, n, window_id, nyquist_flat_top, 1, out_handle) }
+    unsafe { gaussogram_create_ex(scheme_id, n, window_id, top_window_id, 1, out_handle) }
 }
 
 /// Create an engine with `bands_per_octave` sub-bands per dyadic octave (a
@@ -117,7 +134,7 @@ pub unsafe extern "C" fn gaussogram_create_ex(
     scheme_id: i32,
     n: usize,
     window_id: i32,
-    nyquist_flat_top: i32,
+    top_window_id: i32,
     bands_per_octave: usize,
     out_handle: *mut *mut GaussogramHandle,
 ) -> i32 {
@@ -129,7 +146,7 @@ pub unsafe extern "C" fn gaussogram_create_ex(
             return STATUS_UNKNOWN_WINDOW;
         };
         let engine =
-            match engine_from_id(scheme_id, n, kind, nyquist_flat_top != 0, bands_per_octave) {
+            match engine_from_id(scheme_id, n, kind, top_window_id, bands_per_octave) {
                 Ok(e) => e,
                 Err(status) => return status,
             };

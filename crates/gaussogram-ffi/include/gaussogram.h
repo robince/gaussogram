@@ -31,6 +31,14 @@ extern "C" {
 #define GAUSSOGRAM_WINDOW_GAUSSIAN 0
 #define GAUSSOGRAM_WINDOW_BOX 1
 
+/* top_window_id values for gaussogram_create / gaussogram_create_ex: the
+ * shape of tiling A's top band in dyadic_dual_real. Other schemes accept only
+ * the default (0).
+ * 1 keeps the meaning of the former nyquist_flat_top = 1. */
+#define GAUSSOGRAM_TOP_WINDOW_WIDE 0
+#define GAUSSOGRAM_TOP_WINDOW_FLAT 1
+#define GAUSSOGRAM_TOP_WINDOW_GAUSSIAN 2
+
 /* Opaque engine handle: build once (plans precomputed), transform many. */
 typedef struct GaussogramHandle GaussogramHandle;
 
@@ -41,7 +49,7 @@ int32_t gaussogram_create(
     int32_t scheme_id,
     size_t n,
     int32_t window_id,
-    int32_t nyquist_flat_top,
+    int32_t top_window_id,
     GaussogramHandle** out_handle
 );
 
@@ -54,7 +62,7 @@ int32_t gaussogram_create_ex(
     int32_t scheme_id,
     size_t n,
     int32_t window_id,
-    int32_t nyquist_flat_top,
+    int32_t top_window_id,
     size_t bands_per_octave,
     GaussogramHandle** out_handle
 );

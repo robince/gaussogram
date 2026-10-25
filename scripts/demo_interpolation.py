@@ -52,7 +52,7 @@ def chirp(f0, f1):
 # A mix of stationary (gated tones) and sweeping (chirp) content shows the
 # interpolation differences on both axes.
 signal = tone(36) + 0.8 * tone(140) + 0.9 * chirp(40, 110)
-coeffs = g.gft1d_real(signal, nyquist_flat_top=True)
+coeffs = g.gft1d_real(signal)
 
 MODES = [
     ("nearest time / block freq", dict(interp="nearest", interp_freq="block")),
@@ -67,7 +67,7 @@ MODES = [
 # Same signal, same (shared) colour scale — only the display resampling differs.
 
 # %%
-grids = [g.to_grid(coeffs, N, nyquist_flat_top=True, normalize="width", **kw)
+grids = [g.to_grid(coeffs, N, normalize="width", **kw)
          for _, kw in MODES]
 vmax = max(gd.max() for gd in grids)
 
@@ -98,7 +98,7 @@ plt.show()
 row = 20  # inside the fc~24 band (width 16): ~16 samples across N
 fig, ax = plt.subplots(figsize=(9, 4))
 for name, kw in MODES:
-    grid = g.to_grid(coeffs, N, nyquist_flat_top=True, normalize="width", **kw)
+    grid = g.to_grid(coeffs, N, normalize="width", **kw)
     ax.plot(np.arange(N), grid[row], lw=1.3, label=name)
 ax.set_title(f"Magnitude along time at frequency bin {row}")
 ax.set_xlabel("time (samples)")

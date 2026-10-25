@@ -1,7 +1,7 @@
 classdef Gaussogram1d < handle
 %GAUSSOGRAM1D  Reusable GFT engine (builds FFT plans once).
 %   eng = GAUSSOGRAM1D(n)
-%   eng = GAUSSOGRAM1D(n, 'scheme', s, 'window', w, 'nyquist_flat_top', tf, ...
+%   eng = GAUSSOGRAM1D(n, 'scheme', s, 'window', w, 'top_window', t, ...
 %                      'bands_per_octave', b)
 %   coeffs = eng.forward(signal)
 %   signal = eng.inverse(coeffs)          % real-scheme engines
@@ -39,9 +39,13 @@ classdef Gaussogram1d < handle
         output_len         % packed complex-coefficient count
         scheme             % scheme name (char)
         window             % window name (char)
-        nyquist_flat_top   % logical
+        top_window         % top-band window of dyadic_dual_real (char)
         bands_per_octave   % sub-bands per dyadic octave (power of two)
         invertible         % logical: inverse() is available (real schemes)
+    end
+
+    properties (Dependent)
+        nyquist_flat_top   % deprecated: true when top_window is 'flat'
     end
 
     properties (Access = private, Transient)
@@ -56,8 +60,9 @@ classdef Gaussogram1d < handle
         function olen = create_engine(obj)
             [scheme_id, window_id] = gaussogram_ids(obj.scheme, obj.window);
             gaussogram_check_built();
+            [~, top_id] = gaussogram_resolve_top_window(obj.top_window, []);
             [h, olen] = gaussogram_mex('create', obj.n, scheme_id, window_id, ...
-                double(obj.nyquist_flat_top), obj.bands_per_octave);
+                top_id, obj.bands_per_octave);
             obj.ptr = h;
         end
 
@@ -76,10 +81,14 @@ classdef Gaussogram1d < handle
             obj.n = double(n);
             obj.scheme = lower(opts.scheme);
             obj.window = lower(opts.window);
-            obj.nyquist_flat_top = opts.nyquist_flat_top;
+            obj.top_window = opts.top_window;
             obj.bands_per_octave = opts.bands_per_octave;
             obj.invertible = ~strcmp(obj.scheme, 'dyadic_complex');
             obj.output_len = obj.create_engine();
+        end
+
+        function tf = get.nyquist_flat_top(obj)
+            tf = strcmp(obj.top_window, 'flat');
         end
 
         function coeffs = forward(obj, signal)

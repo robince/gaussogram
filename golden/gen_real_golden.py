@@ -48,7 +48,10 @@ def make_input(n: int) -> np.ndarray:
 def main() -> None:
     lines = []
     for scheme, n, bpo in CASES:
-        c = g.gft1d_real(make_input(n), scheme=scheme, bands_per_octave=bpo)
+        # Frozen before the wide top window became the dual scheme's default;
+        # tests/transform.rs builds these cases with TopWindow::Gaussian.
+        kw = dict(top_window="gaussian") if scheme == "dyadic_dual_real" else {}
+        c = g.gft1d_real(make_input(n), scheme=scheme, bands_per_octave=bpo, **kw)
         lines.append(f"SCHEME {scheme} N {n} BPO {bpo} LEN {len(c)}")
         lines.extend(f"{float(v.real):.17g} {float(v.imag):.17g}" for v in c)
     out = "\n".join(lines) + "\n"

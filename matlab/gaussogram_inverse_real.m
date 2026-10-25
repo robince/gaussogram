@@ -2,7 +2,7 @@ function signal = gaussogram_inverse_real(coeffs, varargin)
 %GAUSSOGRAM_INVERSE_REAL  Inverse of a real-input scheme.
 %   signal = GAUSSOGRAM_INVERSE_REAL(coeffs)
 %   signal = GAUSSOGRAM_INVERSE_REAL(coeffs, 'scheme', s, 'window', w, ...
-%                                    'bands_per_octave', b, 'nyquist_flat_top', tf)
+%                                    'bands_per_octave', b, 'top_window', t)
 %
 %   coeffs is a complex coefficient vector produced by GAUSSOGRAM. Returns
 %   the reconstructed real signal as a length-N column vector.
@@ -16,10 +16,11 @@ function signal = gaussogram_inverse_real(coeffs, varargin)
 %   2^k+1 and N-1 is always 2^k-1, which never coincide. 'dyadic_complex' is
 %   not invertible.
 %
-%   'window', 'bands_per_octave' and 'nyquist_flat_top' (dyadic_dual_real
-%   only) must match the forward transform. A mismatch cannot be detected -
-%   the packed length is the same for every bands_per_octave - and silently
-%   reconstructs the wrong signal. Mirrors the Python gaussogram.inverse_real.
+%   'window', 'bands_per_octave' and 'top_window' (dyadic_dual_real only;
+%   'nyquist_flat_top' is a deprecated alias) must match the forward
+%   transform. A mismatch cannot be detected - the packed length is the same
+%   for every bands_per_octave and top_window - and silently reconstructs the
+%   wrong signal. Mirrors the Python gaussogram.inverse_real.
 %
 %   See also GAUSSOGRAM, GAUSSOGRAM1D.
 
@@ -28,10 +29,12 @@ p.FunctionName = 'gaussogram_inverse_real';
 addParameter(p, 'scheme', [], @(s) isempty(s) || ischar(s) || isstring(s));
 addParameter(p, 'window', 'gaussian', @(s) ischar(s) || isstring(s));
 addParameter(p, 'bands_per_octave', 1);
-addParameter(p, 'nyquist_flat_top', false, @(t) isscalar(t) && (islogical(t) || isnumeric(t)));
+addParameter(p, 'top_window', '', @(s) ischar(s) || isstring(s));
+addParameter(p, 'nyquist_flat_top', [], @(t) isempty(t) || (isscalar(t) && (islogical(t) || isnumeric(t))));
 parse(p, varargin{:});
 bpo = gaussogram_check_bpo(p.Results.bands_per_octave);
-nyquist = logical(p.Results.nyquist_flat_top);
+[~, top_window_id] = gaussogram_resolve_top_window( ...
+    p.Results.top_window, p.Results.nyquist_flat_top);
 
 if ~isa(coeffs, 'double') || issparse(coeffs)
     error('gaussogram:coeffs', 'coeffs must be a full double array.');
@@ -57,13 +60,13 @@ end
 if scheme_id == 2
     error('gaussogram:notInvertible', "'dyadic_complex' is not invertible.");
 end
-if nyquist && scheme_id ~= 0
-    error('gaussogram:nyquist_flat_top', ...
-        "nyquist_flat_top is only supported by 'dyadic_dual_real'.");
+if top_window_id ~= 0 && scheme_id ~= 0
+    error('gaussogram:top_window', ...
+        "top_window is only supported by 'dyadic_dual_real'.");
 end
 
 gaussogram_check_built();
-signal = gaussogram_mex('inverse_real', coeffs, window_id, bpo, scheme_id, double(nyquist));
+signal = gaussogram_mex('inverse_real', coeffs, window_id, bpo, scheme_id, top_window_id);
 end
 
 function tf = local_is_pow2(v)

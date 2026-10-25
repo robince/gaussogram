@@ -71,8 +71,8 @@ def time_to_N(mag):
 # consistent: a flat-spectrum impulse stays flat across every panel. (Tones then
 # dim toward high frequency equally for all — the honest, consistent trade.)
 def grid_gaussogram(s):
-    c = g.gft1d_real(s, scheme="dyadic_dual_real", nyquist_flat_top=True)
-    return g.to_grid(c, N, nyquist_flat_top=True, interp_freq="gauss", normalize="none")
+    c = g.gft1d_real(s, scheme="dyadic_dual_real")
+    return g.to_grid(c, N, interp_freq="gauss", normalize="none")
 
 
 pywt_level = int(np.log2(N)) - 1

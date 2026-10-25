@@ -40,6 +40,7 @@ passed = passed + run_case(@t_adjacency_structure);
 passed = passed + run_case(@t_adjacency_circular_wrap);
 passed = passed + run_case(@t_sparse_adjacency);
 passed = passed + run_case(@t_geometry_adjacency_match_python);
+passed = passed + run_case(@t_top_window_options);
 
 fprintf('\nAll %d gaussogram test cases passed.\n', passed);
 end
@@ -454,7 +455,7 @@ for bpo = [1, 2, 4, 8]
         'window', 'box', 'bands_per_octave', bpo);
     assert_true(max(abs(rec_box - sig)) < 1e-9, sprintf('box bpo=%d round trip', bpo));
 end
-cdual = gaussogram(sig, 'bands_per_octave', 4, 'nyquist_flat_top', true);
+cdual = gaussogram(sig, 'bands_per_octave', 4, 'top_window', 'flat');
 assert_true(numel(cdual) == n - 1 && all(isfinite(cdual)), 'dual bpo=4 flat-top forward');
 end
 
@@ -569,9 +570,9 @@ rec = gaussogram_inverse_real(gaussogram(sig));
 assert_true(iscolumn(rec) && numel(rec) == n, 'default inverse should return N x 1');
 assert_true(max(abs(rec - sig)) < 1e-10, 'default forward/inverse pair should round trip');
 for bpo = [1, 4]
-    for flat = [false, true]
-        opts = {'bands_per_octave', bpo, 'nyquist_flat_top', flat};
-        label = sprintf('bpo=%d flat=%d', bpo, flat);
+    for top = {'wide', 'gaussian', 'flat'}
+        opts = {'bands_per_octave', bpo, 'top_window', top{1}};
+        label = sprintf('bpo=%d top_window=%s', bpo, top{1});
         c = gaussogram(sig, opts{:});
         explicit = gaussogram_inverse_real(c, 'scheme', 'dyadic_dual_real', opts{:});
         inferred = gaussogram_inverse_real(c, opts{:});
@@ -595,7 +596,7 @@ cases = { ...
     {c(1:end - 1), {}, 'gaussogram:coeffsLen'}, ...          % 62: neither 2^k+1 nor 2^k-1
     {complex(zeros(2, 1)), {}, 'gaussogram:coeffsLen'}, ...  % too short to infer
     {c, {'scheme', 'dyadic_complex'}, 'gaussogram:notInvertible'}, ...
-    {c(1:33), {'nyquist_flat_top', true}, 'gaussogram:nyquist_flat_top'}, ...  % inferred dyadic_real
+    {c(1:33), {'top_window', 'flat'}, 'gaussogram:top_window'}, ...  % inferred dyadic_real
     {c, {'scheme', 'dyadic_real'}, 'gaussogram:create'}, ...  % 63 -> N = 124, not a power of two
     {c, {'scheme', 'dyadic_wavelet'}, 'gaussogram:scheme'}, ...
     };
@@ -618,6 +619,7 @@ function t_dual_inverse_match_python()
 % Expected values were computed with the Python package on main after #14
 % (gaussogram.inverse_real, energy-weighted least squares); this pins that
 % weighting. Coefficients: c(k) = cos(0.7 k) + 1i sin(0.3 k + 0.1), k = 0..N-2.
+% They predate top_window: flat = false was the plain Gaussian top band.
 ref = { ...
     {16, 1, false, [0.23735514131639318, 0.04131866173983578, -0.13381439439620707, ...
         0.2415513589301889, -0.3526803088842539, 0.16281414011217932, 0.24716389278908463, ...
@@ -638,7 +640,8 @@ for r = 1:numel(ref)
     [n, bpo, flat, expected] = ref{r}{:};
     k = (0:(n - 2)).';
     c = cos(0.7 * k) + 1i * sin(0.3 * k + 0.1);
-    opts = {'bands_per_octave', bpo, 'nyquist_flat_top', flat};
+    tops = {'gaussian', 'flat'};
+    opts = {'bands_per_octave', bpo, 'top_window', tops{flat + 1}};
     x = gaussogram_inverse_real(c, opts{:});
     err = max(abs(x - expected(:)));
     assert_true(err < 1e-12, sprintf('dual inverse differs from Python (n=%d): %g', n, err));
@@ -827,4 +830,69 @@ types16 = [zeros(1, 8), ones(1, 17), 2 * ones(1, 13)];
 adj = gaussogram_coefficient_adjacency(16);
 assert_true(isequal(adj.edge_index, edges16) && isequal(adj.edge_type, types16), ...
     'n=16 edge list should match Python exactly');
+end
+
+function t_top_window_options()
+n = 256;
+sig = zeros(n, 1);
+sig(6) = 1;
+c_default = gaussogram(sig);
+c_wide = gaussogram(sig, 'top_window', 'wide');
+c_gauss = gaussogram(sig, 'top_window', 'gaussian');
+c_flat = gaussogram(sig, 'top_window', 'flat');
+assert_true(isequal(c_default, c_wide), 'the default top window should be wide');
+assert_true(~isequal(c_wide, c_gauss) && ~isequal(c_wide, c_flat) && ~isequal(c_gauss, c_flat), ...
+    'the three top windows should differ at one band per octave');
+% Raw C ABI ids: 0 = wide, 1 = flat (the old nyquist_flat_top = true), 2 = gaussian.
+assert_true(isequal(gaussogram_mex('forward', sig, 0, 0, 1), c_flat), 'id 1 should be flat');
+assert_true(isequal(gaussogram_mex('forward', sig, 0, 0, 2), c_gauss), 'id 2 should be gaussian');
+threw = false;
+try
+    gaussogram_mex('forward', sig, 0, 0, 3);
+catch
+    threw = true;
+end
+assert_true(threw, 'an unknown top_window id should be rejected');
+% The deprecated alias still selects the flat top, with a warning.
+lastwarn('');
+s = warning('off', 'gaussogram:deprecated');
+restore = onCleanup(@() warning(s));
+c_alias = gaussogram(sig, 'nyquist_flat_top', true);
+[~, wid] = lastwarn();
+assert_true(strcmp(wid, 'gaussogram:deprecated'), 'nyquist_flat_top should warn');
+assert_true(isequal(c_alias, c_flat), 'nyquist_flat_top=true should mean flat');
+lastwarn('');
+c_false = gaussogram(sig, 'nyquist_flat_top', false);
+[msg, wid] = lastwarn();
+assert_true(strcmp(wid, 'gaussogram:deprecated') && contains(msg, "'gaussian'"), ...
+    'nyquist_flat_top=false should warn and name the old top window');
+assert_true(isequal(c_false, c_wide), 'nyquist_flat_top=false should give the default');
+eng = Gaussogram1d(n, 'nyquist_flat_top', true);
+assert_true(strcmp(eng.top_window, 'flat') && eng.nyquist_flat_top, 'engine should record flat');
+assert_true(isequal(eng.forward(sig), c_flat), 'flat engine should match the function');
+delete(eng);
+threw = false;
+try
+    gaussogram(sig, 'top_window', 'gaussian', 'nyquist_flat_top', true);
+catch err
+    threw = strcmp(err.identifier, 'gaussogram:top_window');
+end
+assert_true(threw, 'conflicting top_window options should be rejected');
+threw = false;
+try
+    gaussogram(sig, 'scheme', 'dyadic_real', 'top_window', 'flat');
+catch
+    threw = true;
+end
+assert_true(threw, 'a non-default top_window should be rejected for dyadic_real');
+% Box windows ignore top_window in the transform, so the rendering must too.
+c_box = gaussogram(sig, 'window', 'box');
+g_box = cellfun(@(t) gaussogram_to_grid(c_box, n, 'window', 'box', 'top_window', t, ...
+    'interp_freq', 'gauss'), {'wide', 'gaussian', 'flat'}, 'UniformOutput', false);
+assert_true(isequal(g_box{1}, g_box{2}, g_box{3}), 'box to_grid should ignore top_window');
+% to_grid accepts the option in every frequency mode.
+for mode = {'block', 'linear', 'gauss'}
+    grid = gaussogram_to_grid(c_wide, n, 'top_window', 'wide', 'interp_freq', mode{1});
+    assert_true(all(isfinite(grid(:))), 'to_grid with top_window should be finite');
+end
 end

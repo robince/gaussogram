@@ -69,12 +69,12 @@ def test_dyadic_real_round_trip(n):
 # ---- frame inverse (dyadic_dual_real) -------------------------------------
 
 
-@pytest.mark.parametrize("nyquist_flat_top", [False, True])
+@pytest.mark.parametrize("top_window", ["wide", "gaussian", "flat"])
 @pytest.mark.parametrize("bpo", [1, 2, 4])
 @pytest.mark.parametrize("n", [16, 64, 256])
-def test_dyadic_dual_real_round_trip(n, bpo, nyquist_flat_top):
+def test_dyadic_dual_real_round_trip(n, bpo, top_window):
     x = np.random.default_rng(0).standard_normal(n)
-    kw = dict(bands_per_octave=bpo, nyquist_flat_top=nyquist_flat_top)
+    kw = dict(bands_per_octave=bpo, top_window=top_window)
     coeffs = g.gft1d_real(x, scheme="dyadic_dual_real", **kw)
     assert len(coeffs) == n - 1
     # The default scheme=None infers dyadic_dual_real from the N-1 length.
@@ -204,9 +204,8 @@ def test_to_grid_width_normalize_equalises_brightness_across_octaves():
     centres = (24, 48, 96, 192)  # successive octave-band centres
     peaks_none, peaks_width = [], []
     for f in centres:
-        c = g.gft1d_real(np.ascontiguousarray(np.cos(2 * np.pi * f * t / n)),
-                         nyquist_flat_top=True)
-        kw = dict(nyquist_flat_top=True, interp_freq="gauss")
+        c = g.gft1d_real(np.ascontiguousarray(np.cos(2 * np.pi * f * t / n)))
+        kw = dict(interp_freq="gauss")
         peaks_none.append(g.to_grid(c, n, normalize="none", **kw).max())
         peaks_width.append(g.to_grid(c, n, normalize="width", **kw).max())
     peaks_none = np.array(peaks_none)
@@ -223,8 +222,8 @@ def test_to_grid_gauss_confines_join_tone_to_effective_bandwidth():
     n = 512
     join = 64
     x = np.ascontiguousarray(np.cos(2 * np.pi * join * np.arange(n) / n))
-    coeffs = g.gft1d_real(x, scheme="dyadic_dual_real", nyquist_flat_top=True)
-    kw = dict(scheme="dyadic_dual_real", nyquist_flat_top=True)
+    coeffs = g.gft1d_real(x, scheme="dyadic_dual_real")
+    kw = dict(scheme="dyadic_dual_real")
     block = g.to_grid(coeffs, n, interp_freq="block", **kw)
     gauss = g.to_grid(coeffs, n, interp_freq="gauss", **kw)
 
@@ -329,15 +328,134 @@ def test_input_not_mutated_and_writeable_flag_restored():
 # ---- reusable Gaussogram1d handle -----------------------------------------
 
 
-def test_handle_matches_free_function():
+@pytest.mark.parametrize("top_window", [None, "wide", "gaussian", "flat"])
+def test_handle_matches_free_function(top_window):
     n = 256
     x = np.ascontiguousarray(np.cos(2 * np.pi * 40 * np.arange(n) / n))
-    h = g.Gaussogram1d(n, scheme="dyadic_dual_real", nyquist_flat_top=True)
+    h = g.Gaussogram1d(n, scheme="dyadic_dual_real", top_window=top_window)
+    assert isinstance(h, g.Gaussogram1d)
     assert h.n == n
     assert h.output_len == n - 1
-    free = g.gft1d_real(x, scheme="dyadic_dual_real", nyquist_flat_top=True)
+    free = g.gft1d_real(x, scheme="dyadic_dual_real", top_window=top_window)
     handle = h.forward(x)
     np.testing.assert_array_equal(handle, free)
+    np.testing.assert_allclose(h.inverse(handle), x, atol=1e-9)
+
+
+# ---- top window of the dual scheme ----------------------------------------
+
+
+def _impulse_coeffs(n, **kw):
+    x = np.zeros(n)
+    x[5] = 1.0
+    return g.gft1d_real(x, scheme="dyadic_dual_real", **kw)
+
+
+def test_top_window_default_is_wide():
+    n = 256
+    default = _impulse_coeffs(n)
+    np.testing.assert_array_equal(default, _impulse_coeffs(n, top_window="wide"))
+    for other in ("gaussian", "flat"):
+        assert not np.array_equal(default, _impulse_coeffs(n, top_window=other))
+    # At bands_per_octave >= 2 the plain Gaussian is already the wider one.
+    np.testing.assert_array_equal(
+        _impulse_coeffs(n, bands_per_octave=2),
+        _impulse_coeffs(n, bands_per_octave=2, top_window="gaussian"),
+    )
+
+
+def test_nyquist_flat_top_is_deprecated_alias():
+    n = 256
+    flat = _impulse_coeffs(n, top_window="flat")
+    with pytest.warns(DeprecationWarning, match="top_window='flat'"):
+        np.testing.assert_array_equal(_impulse_coeffs(n, nyquist_flat_top=True), flat)
+    # False keeps meaning "the default", and the warning says how to get the
+    # previous (plain Gaussian) output.
+    with pytest.warns(DeprecationWarning, match="top_window='gaussian'"):
+        np.testing.assert_array_equal(
+            _impulse_coeffs(n, nyquist_flat_top=False), _impulse_coeffs(n)
+        )
+    # The old positional slot still means nyquist_flat_top.
+    x = np.zeros(n)
+    x[5] = 1.0
+    with pytest.warns(DeprecationWarning):
+        np.testing.assert_array_equal(
+            g.gft1d_real(x, "dyadic_dual_real", "gaussian", True), flat
+        )
+    with pytest.warns(DeprecationWarning):
+        h = g.Gaussogram1d(n, nyquist_flat_top=True)
+    np.testing.assert_array_equal(h.forward(x), flat)
+    with pytest.warns(DeprecationWarning):
+        np.testing.assert_allclose(g.inverse_real(flat, nyquist_flat_top=True), x, atol=1e-9)
+
+
+def test_top_window_conflicts_and_bad_values_raise():
+    n = 256
+    x = np.zeros(n)
+    with pytest.warns(DeprecationWarning), pytest.raises(ValueError, match="conflicts"):
+        g.gft1d_real(x, top_window="gaussian", nyquist_flat_top=True)
+    with pytest.warns(DeprecationWarning), pytest.raises(ValueError, match="conflicts"):
+        g.gft1d_real(x, top_window="flat", nyquist_flat_top=False)
+    with pytest.raises(ValueError, match="top_window"):
+        g.gft1d_real(x, top_window="narrow")
+    with pytest.raises(ValueError, match="top_window"):
+        g.Gaussogram1d(n, top_window="narrow")
+    # Other schemes accept only the default.
+    g.gft1d_real(x, scheme="dyadic_real", top_window="wide")
+    for top in ("gaussian", "flat"):
+        with pytest.raises(ValueError, match="only supported by 'dyadic_dual_real'"):
+            g.gft1d_real(x, scheme="dyadic_real", top_window=top)
+
+
+@pytest.mark.parametrize("top_window", ["wide", "gaussian", "flat"])
+def test_to_grid_gauss_mirrors_top_window(top_window):
+    # Synthetic coefficients, constant within each band, make every band's
+    # time row that constant, so a "gauss" grid row is the window-weighted mean
+    # of the constants of the bands covering it. Check the row against that
+    # mean, computed here from the window definitions, at a frequency where
+    # the top A band [N/4, N/2) overlaps tiling B's top band [N/8, 3N/8).
+    n = 512
+    f = 160
+    lay = g.scheme_bands(n)
+    coeffs = np.zeros(n - 1, dtype=np.complex128)
+    num = den = 0.0
+    for bi, (lo, w, fc, off) in enumerate(
+        zip(lay.src_lo, lay.width, lay.fcentre, lay.out_off)
+    ):
+        lo, w, fc, off = int(lo), int(w), int(fc), int(off)
+        value = 1.0 + bi  # distinct per band
+        coeffs[off : off + w] = value
+        if not lo <= f < lo + w:
+            continue
+        sigma = fc / (2.0 * np.pi)
+        is_top = lo + w == n // 2
+        if is_top and top_window == "wide":
+            sigma = max(sigma, (w / 2.0) / np.sqrt(2.0 * np.log(1.0 / 0.63)))
+        weight = np.exp(-((f - fc) ** 2) / (2.0 * sigma**2))
+        if is_top and top_window == "flat" and f >= fc:
+            weight = 1.0
+        num += weight * value
+        den += weight
+    grid = g.to_grid(coeffs, n, top_window=top_window, interp_freq="gauss")
+    np.testing.assert_allclose(grid[f], num / den, rtol=1e-12)
+    # Below the peak only the wide window differs from the plain one, and it
+    # visibly shifts the weighted mean.
+    if top_window != "wide":
+        wide = g.to_grid(coeffs, n, top_window="wide", interp_freq="gauss")
+        assert abs(wide[f, 0] - grid[f, 0]) > 1e-3
+
+
+def test_to_grid_box_ignores_top_window():
+    # The transform ignores top_window for box windows, so the rendering must too.
+    n = 512
+    x = np.random.default_rng(0).standard_normal(n)
+    c = g.gft1d_real(x, window_type="box")
+    grids = [
+        g.to_grid(c, n, window_type="box", top_window=t, interp_freq="gauss")
+        for t in ("wide", "gaussian", "flat")
+    ]
+    np.testing.assert_array_equal(grids[0], grids[1])
+    np.testing.assert_array_equal(grids[0], grids[2])
 
 
 def test_handle_reused_across_calls_is_stable():

@@ -59,8 +59,12 @@ The production schemes show the same effect across the whole spectrum
 (`scripts/dead_zone_sweep.py`). Sweeping a unit tone over every bin, the
 best-band window gain of `dyadic_real` drops to about 0.1 at every octave join
 (bands_per_octave = 1). `dyadic_dual_real` stays at about 0.45 or higher (about
-0.8 at bands_per_octave = 2). The only remaining roll-off is at the last bins
-before Nyquist, which is the end of the spectrum, not a join:
+0.8 at bands_per_octave = 2). No offset band can sit on Nyquist, so the last bins
+before it are covered by the top band alone. With the default
+`top_window="wide"` that band's widened Gaussian keeps the response there at
+about 0.64 or higher (0.69 at bands_per_octave = 2, where the plain Gaussian is
+already that wide); the plain Gaussian (`top_window="gaussian"`, dashed) rolls
+off to about 0.12:
 
 ![tone response vs frequency, single vs dual tiling](figures/dead_zone_sweep.png)
 

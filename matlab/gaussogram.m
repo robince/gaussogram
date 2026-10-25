@@ -1,7 +1,7 @@
 function coeffs = gaussogram(signal, varargin)
 %GAUSSOGRAM  Forward fast Gaussian S-transform (GFT) of a signal.
 %   coeffs = GAUSSOGRAM(signal)
-%   coeffs = GAUSSOGRAM(signal, 'scheme', s, 'window', w, 'nyquist_flat_top', tf, ...
+%   coeffs = GAUSSOGRAM(signal, 'scheme', s, 'window', w, 'top_window', t, ...
 %                       'bands_per_octave', b)
 %
 %   Inputs:
@@ -16,8 +16,14 @@ function coeffs = gaussogram(signal, varargin)
 %                          'dyadic_complex' (complex input, N coeffs; the port
 %                          of the legacy complex transform, Python gft1d).
 %     'window'           - 'gaussian' (default) or 'box'.
-%     'nyquist_flat_top' - logical, flatten the top band window (default
-%                          false; dyadic_dual_real only).
+%     'top_window'       - shape of the top band of 'dyadic_dual_real' (the
+%                          band just below Nyquist, which no offset band covers):
+%                          'wide' (default) a Gaussian widened so its band-edge
+%                          gain is 0.63, removing the dead zone below Nyquist;
+%                          'gaussian' the plain Gaussian of every other band;
+%                          'flat' the plain Gaussian held at its peak up to
+%                          Nyquist. Other schemes accept only the default.
+%     'nyquist_flat_top' - deprecated alias: true means 'top_window', 'flat'.
 %     'bands_per_octave' - power of two >= 1 (default 1): split each dyadic
 %                          octave into that many sub-bands, trading time
 %                          resolution for frequency resolution. The output
@@ -48,5 +54,5 @@ end
 
 gaussogram_check_built();
 coeffs = gaussogram_mex('forward', signal, scheme_id, window_id, ...
-    double(opts.nyquist_flat_top), opts.bands_per_octave);
+    opts.top_window_id, opts.bands_per_octave);
 end

@@ -14,7 +14,7 @@ pub const STATUS_BANDS_PER_OCTAVE: i32 = 8;
 /// no `GaussogramError` variant maps to it.
 pub const STATUS_UNKNOWN_SCHEME: i32 = 9;
 /// Used only by the C ABI for an option a scheme does not support
-/// (e.g. `nyquist_flat_top` outside `dyadic_dual_real`).
+/// (e.g. a non-default `top_window` outside `dyadic_dual_real`).
 pub const STATUS_UNSUPPORTED_OPTION: i32 = 10;
 pub const STATUS_INTERNAL: i32 = 99;
 

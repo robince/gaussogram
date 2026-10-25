@@ -49,10 +49,7 @@ def band_energy(coeffs, layout):
 
 
 def make_grid(coeffs, scheme):
-    # nyquist_flat_top is a dual-scheme option; dyadic_real rejects it.
-    return g.to_grid(coeffs, N, scheme=scheme,
-                     nyquist_flat_top=(scheme == "dyadic_dual_real"),
-                     interp="linear", normalize="width")
+    return g.to_grid(coeffs, N, scheme=scheme, interp="linear", normalize="width")
 
 
 # %% [markdown]
@@ -71,7 +68,7 @@ def make_grid(coeffs, scheme):
 # %%
 panels = []  # (row, col, title, grid)
 for i, (label, f) in enumerate([("centre f=48", CENTRE_F), ("edge/join f=64", EDGE_F)]):
-    c = g.gft1d_real(tone(f), scheme="dyadic_dual_real", nyquist_flat_top=True)
+    c = g.gft1d_real(tone(f), scheme="dyadic_dual_real")
     c_real = g.gft1d_real(tone(f), scheme="dyadic_real")
     panels.append((i, 0, f"{label} — dyadic_real (tiling A only)", make_grid(c_real, "dyadic_real")))
     panels.append((i, 1, f"{label} — dyadic_dual_real", make_grid(c, "dyadic_dual_real")))
@@ -104,8 +101,8 @@ plt.show()
 # %%
 fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=True)
 for ax, (label, f) in zip(axes, [("centre f=48", CENTRE_F), ("edge/join f=64", EDGE_F)]):
-    layout = g.scheme_bands(N, scheme="dyadic_dual_real", nyquist_flat_top=True)
-    coeffs = g.gft1d_real(tone(f), scheme="dyadic_dual_real", nyquist_flat_top=True)
+    layout = g.scheme_bands(N, scheme="dyadic_dual_real")
+    coeffs = g.gft1d_real(tone(f), scheme="dyadic_dual_real")
     fc, energy, is_b = band_energy(coeffs, layout)
     floor = 1e-6 * energy.max()
     e = np.maximum(energy, floor)

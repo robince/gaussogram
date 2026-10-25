@@ -76,22 +76,22 @@ SIGNALS = {
 }
 
 
-def grid(sig, scheme, nyq, bpo):
-    c = g.gft1d_real(sig, scheme=scheme, nyquist_flat_top=nyq, bands_per_octave=bpo)
+def grid(sig, scheme, bpo):
+    c = g.gft1d_real(sig, scheme=scheme, bands_per_octave=bpo)
     return g.to_grid(
-        c, N, scheme=scheme, nyquist_flat_top=nyq, bands_per_octave=bpo,
+        c, N, scheme=scheme, bands_per_octave=bpo,
         interp="linear", interp_freq="gauss", normalize="width",
     )
 
 
-def make_figure(scheme: str, nyq: bool) -> str:
+def make_figure(scheme: str) -> str:
     nrow, ncol = len(SIGNALS), len(BPOS)
     fig, axes = plt.subplots(nrow, ncol, figsize=(3.6 * ncol, 3.1 * nrow),
                              sharex=True, sharey=True)
     for r, (title, (sig, marks)) in enumerate(SIGNALS.items()):
         for c, bpo in enumerate(BPOS):
             ax = axes[r, c]
-            ax.imshow(grid(sig, scheme, nyq, bpo), origin="lower", aspect="auto",
+            ax.imshow(grid(sig, scheme, bpo), origin="lower", aspect="auto",
                       cmap="magma", extent=[0, N, 0, N // 2 + 1])
             for hl in marks.get("hlines", ()):
                 ax.axhline(hl, color="lime", ls=":", lw=0.6)
@@ -135,5 +135,5 @@ for scheme in ("dyadic_real", "dyadic_dual_real"):
 # ## The pictures (both schemes)
 
 # %%
-for scheme, nyq in (("dyadic_real", False), ("dyadic_dual_real", True)):
-    print("saved", make_figure(scheme, nyq))
+for scheme in ("dyadic_real", "dyadic_dual_real"):
+    print("saved", make_figure(scheme))

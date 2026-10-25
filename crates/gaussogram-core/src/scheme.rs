@@ -3,7 +3,10 @@
 //! per-scheme branching.
 
 use crate::error::GaussogramError;
-use crate::window::{box_band_screen, complex_global_screen, GaussianScreens, WindowKind};
+use crate::window::{
+    box_band_screen, complex_global_screen, gaussian_sigma_screen, wide_top_sigma, GaussianScreens,
+    TopWindow, WindowKind,
+};
 
 /// A band reads the contiguous spectrum slice `[src_lo, src_hi)` and writes its
 /// `width` complex outputs to `[out_off, out_off + width)` of the packed buffer.
@@ -28,9 +31,11 @@ impl Band {
 pub struct Window {
     pub kind: WindowKind,
     pub fcentre: usize,
-    /// §3.2: flatten the upper half of the top band's window from the centre to
-    /// Nyquist so Nyquist-adjacent content is not attenuated. Default false.
-    pub nyquist_flat_top: bool,
+    /// §3.2: the top-window shape, set only on tiling A's top band in
+    /// `dyadic_dual_real` (the band just below the width-1 Nyquist band);
+    /// `None` on every other band. Gaussian windows only: a box window ignores
+    /// it.
+    pub top_window: Option<TopWindow>,
     /// Precomputed frequency-domain taper for this band, length = band width.
     pub screen: Vec<f64>,
 }
@@ -85,7 +90,7 @@ fn make_window(kind: WindowKind, screens: &mut GaussianScreens, lo: usize, width
     Window {
         kind,
         fcentre,
-        nyquist_flat_top: false,
+        top_window: None,
         screen,
     }
 }
@@ -184,17 +189,34 @@ pub fn dyadic_real_with(
 /// A ~2x redundant frame, invertible by the engine's least-squares frame
 /// inverse (least squares in signal energy).
 pub fn dyadic_dual_real(n: usize) -> Result<Scheme, GaussogramError> {
-    dyadic_dual_real_with(n, WindowKind::Gaussian, false, 1)
+    dyadic_dual_real_with(n, WindowKind::Gaussian, TopWindow::Wide, 1)
 }
 
 /// `dyadic_dual_real` with explicit options. `bands_per_octave` (power of two)
 /// subdivides **both** tiling A and the offset tiling-B dead-zone cover in
 /// lockstep, so the dual scheme stays ~2x redundant (output length `N - 1`) for
 /// every `bpo`.
+///
+/// `top_window` shapes tiling A's top band (width `w = N / (4 bpo)`), whose
+/// upper half no tiling-B band covers (one would need bins above `N/2`):
+///
+/// * [`TopWindow::Wide`] (default): the same peak at local index `w/2`, with
+///   `sigma = max(fcentre / (2 pi), wide_top_sigma(w))`, so the gain at both
+///   band edges is at least [`crate::window::TOP_EDGE_GAIN`]. This lifts the
+///   frame's lower bound to the floor of the rest of the frame (condition
+///   number ~3.5 instead of ~84 at `bpo = 1`) and, being symmetric, leaves no
+///   step where the band's FFT wraps round. At `bpo >= 2` the plain Gaussian
+///   is already the wider one, so the screen is unchanged.
+/// * [`TopWindow::Gaussian`]: the plain Gaussian every other band uses.
+/// * [`TopWindow::Flat`]: the plain Gaussian held at its peak value from the
+///   peak to Nyquist. Conditions the frame too, but the step at the wrap
+///   makes the band's time response ring.
+///
+/// Box windows ignore `top_window`.
 pub fn dyadic_dual_real_with(
     n: usize,
     kind: WindowKind,
-    nyquist_flat_top: bool,
+    top_window: TopWindow,
     bands_per_octave: usize,
 ) -> Result<Scheme, GaussogramError> {
     check_pow2(n)?;
@@ -209,18 +231,32 @@ pub fn dyadic_dual_real_with(
     let mut screens = GaussianScreens::new(n);
     let (mut bands, mut windows) = tiling_a(n, kind, bands_per_octave, &mut screens);
 
-    // Apply optional Nyquist flat-top to tiling A's top band: the band just
-    // below the width-1 Nyquist band that ends tiling A.
-    if nyquist_flat_top {
+    // Shape tiling A's top band: the band just below the width-1 Nyquist band
+    // that ends tiling A.
+    if kind == WindowKind::Gaussian {
         let top_idx = bands.len() - 2;
         let top = &mut windows[top_idx];
-        let top_band = &bands[top_idx];
-        let peak = top.fcentre - top_band.src_lo; // local index of the peak
-        let peak_val = top.screen[peak];
-        for v in top.screen[peak..].iter_mut() {
-            *v = peak_val;
+        let width = bands[top_idx].width();
+        match top_window {
+            TopWindow::Gaussian => {}
+            TopWindow::Wide => {
+                // Never narrower than the plain Gaussian; when that is already
+                // the wider one, keep its screen bit for bit.
+                let sigma_default = top.fcentre as f64 / (2.0 * std::f64::consts::PI);
+                let sigma_wide = wide_top_sigma(width);
+                if sigma_wide > sigma_default {
+                    top.screen = gaussian_sigma_screen(n, sigma_wide, width);
+                }
+            }
+            TopWindow::Flat => {
+                let peak = top.fcentre - bands[top_idx].src_lo; // local index of the peak
+                let peak_val = top.screen[peak];
+                for v in top.screen[peak..].iter_mut() {
+                    *v = peak_val;
+                }
+            }
         }
-        top.nyquist_flat_top = true;
+        top.top_window = Some(top_window);
     }
 
     // Tiling B: the dead-zone cover, offset by HALF A SUB-BAND from tiling A so
@@ -303,7 +339,7 @@ pub fn dyadic_complex_with(n: usize, kind: WindowKind) -> Result<Scheme, Gaussog
         windows.push(Window {
             kind,
             fcentre,
-            nyquist_flat_top: false,
+            top_window: None,
             screen,
         });
         bands.push(Band {

@@ -35,12 +35,30 @@ the Gaussian "dead zones" at octave joins that the single dyadic cover suffers.
 
 | scheme | input | output length | invertible | notes |
 |---|---|---|---|---|
-| `dyadic_dual_real` *(default)* | real | `N − 1` | yes (least-squares frame inverse) | dyadic cover **plus** half-octave-offset bands centred on the octave joins, to rescue tones that fall into the single cover's dead zones |
+| `dyadic_dual_real` *(default)* | real | `N − 1` | yes (least-squares frame inverse) | dyadic cover **plus** half-octave-offset bands centred on the octave joins, to rescue tones that fall into the single cover's dead zones; the top band's window is widened (`top_window="wide"`) to cover the bins below Nyquist, which no offset band reaches |
 | `dyadic_real` | real | `N/2 + 1` | **yes** | baseline single dyadic cover; the invertible, critically-sampled transform |
 | `dyadic_complex` | complex | `N` | no | symmetric complex dyadic scheme (port of the legacy complex transform); min `N = 8` |
 
 `N` must be a power of two. The Gaussian window is the default; a `box` window is
 also available.
+
+No offset band can be centred on Nyquist (it would need bins above `N/2`), so in
+`dyadic_dual_real` the upper half of the top dyadic band is covered by that band
+alone. Its window shape is the `top_window` option:
+
+- `"wide"` *(default)*: the same Gaussian peak, widened so the gain at both band
+  edges is 0.63. This lifts the frame's lower bound to that of the rest of the
+  frame (condition number about 3.5 instead of 84 at `N = 1024`,
+  `bands_per_octave = 1`), and being symmetric it adds almost no ringing to the
+  band's time response. At `bands_per_octave >= 2` the plain Gaussian is already
+  this wide, so nothing changes.
+- `"gaussian"`: the plain Gaussian every other band uses (the default before
+  this option existed); content near Nyquist is attenuated to about 0.11.
+- `"flat"`: the plain Gaussian held at its peak value up to Nyquist. It also
+  conditions the frame, but the step where the band's FFT wraps makes the band's
+  time response ring.
+
+`nyquist_flat_top=True` is a deprecated alias for `top_window="flat"`.
 
 The real schemes' dyadic cover is `[0,1), [1,2), [2,4), …, [N/4, N/2)` plus the
 Nyquist bin `N/2` as its own width-1 band (exact, like DC), so every band width
@@ -114,10 +132,10 @@ C = h.forward_batch(np.random.randn(100, 512))   # (100, N/2+1)
 
 ### Python API
 
-- `gft1d_real(x, scheme=…, window_type=…, nyquist_flat_top=…, bands_per_octave=…)` — forward GFT of a real signal.
+- `gft1d_real(x, scheme=…, window_type=…, top_window=…, bands_per_octave=…)` — forward GFT of a real signal. `top_window` (`"wide"` default, `"gaussian"`, `"flat"`) shapes the top band of `dyadic_dual_real` (see *Transforms / schemes*). The old `nyquist_flat_top=True` still works as a deprecated alias for `"flat"` (with a `DeprecationWarning`).
 - `gft1d(z, …)` — forward GFT of a complex signal (`dyadic_complex`).
-- `inverse_real(coeffs, …, bands_per_octave=…, scheme=None, nyquist_flat_top=…)` — inverse of a real scheme: exact for `dyadic_real`, least-squares (canonical dual) frame inverse for `dyadic_dual_real`. `scheme=None` infers it from the length (`N/2+1` vs `N−1`); the other options must match the forward call.
-- `Gaussogram1d(n, …, bands_per_octave=…)` — reusable engine handle:
+- `inverse_real(coeffs, …, bands_per_octave=…, scheme=None, top_window=…)` — inverse of a real scheme: exact for `dyadic_real`, least-squares (canonical dual) frame inverse for `dyadic_dual_real`. `scheme=None` infers it from the length (`N/2+1` vs `N−1`); the other options must match the forward call.
+- `Gaussogram1d(n, …, top_window=…, bands_per_octave=…)` — reusable engine handle:
   `.forward(x, out=None)`, `.forward_batch(X, out=None)` (rows of a
   C-contiguous `(count, N)` array, parallel across rows), `.inverse(c)`.
   One handle per thread; the free functions are thread-safe.
@@ -147,8 +165,9 @@ C = h.forward_batch(np.random.randn(100, 512))   # (100, N/2+1)
 
 Run `build_mex` once in `matlab/` (needs cargo and a MEX C++ compiler), then
 add `matlab/` to the path. Options are name-value pairs (`'scheme'`,
-`'window'`, `'nyquist_flat_top'`, `'bands_per_octave'`) with the Python
-defaults; outputs are column vectors.
+`'window'`, `'top_window'`, `'bands_per_octave'`) with the Python
+defaults (`'nyquist_flat_top'` is kept as a deprecated alias for
+`'top_window', 'flat'`); outputs are column vectors.
 
 ```matlab
 c = gaussogram(x);                                        % N-1 coeffs (dyadic_dual_real)
@@ -165,7 +184,7 @@ grid = gaussogram_to_grid(c, 512, 'scheme', 'dyadic_real', 'bands_per_octave', 2
 - `gaussogram_inverse_real(c, …)` — inverse of a real scheme: exact for
   `dyadic_real`, least-squares frame inverse for `dyadic_dual_real`. `'scheme'`
   defaults to inferring it from the length (`N/2+1` vs `N−1`); `'window'`,
-  `'bands_per_octave'` and `'nyquist_flat_top'` must match the forward call.
+  `'bands_per_octave'` and `'top_window'` must match the forward call.
 - `Gaussogram1d(n, …)` — reusable engine: `.forward(x)` (vector or batch
   matrix), `.inverse(c)` for both real schemes.
 - `gaussogram_scheme_bands`, `gaussogram_output_len`, `gaussogram_partitions`,

@@ -70,9 +70,9 @@ def plot_gaussogram(
     smooth=None,
     log=False,
 ):
-    coeffs = g.gft1d_real(signal, scheme=scheme, nyquist_flat_top=True)
+    coeffs = g.gft1d_real(signal, scheme=scheme)
     grid = g.to_grid(
-        coeffs, len(signal), scheme=scheme, nyquist_flat_top=True,
+        coeffs, len(signal), scheme=scheme,
         interp=interp, interp_freq=interp_freq, normalize=normalize, smooth=smooth,
     )
 
